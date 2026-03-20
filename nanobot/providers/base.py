@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator
 
 
 @dataclass
@@ -125,6 +125,34 @@ class LLMProvider(ABC):
             LLMResponse with content and/or tool calls.
         """
         pass
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream chat completion tokens as they arrive.
+
+        Yields text delta strings one chunk at a time.  The default
+        implementation falls back to a single ``chat()`` call so providers
+        that do not override this still work — they just won't stream.
+        Providers that support native streaming should override this method.
+        """
+        response = await self.chat(
+            messages=messages,
+            tools=tools,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+        )
+        if response.content:
+            yield response.content
+        return
 
     @abstractmethod
     def get_default_model(self) -> str:

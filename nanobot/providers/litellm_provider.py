@@ -1,10 +1,11 @@
 """LiteLLM provider implementation for multi-provider support."""
 
 import hashlib
+import json
 import os
 import secrets
 import string
-from typing import Any
+from typing import Any, AsyncIterator
 
 import json_repair
 import litellm
@@ -13,6 +14,19 @@ from loguru import logger
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
+
+# Prefix used to embed tool-call JSON in the chat_stream yield sequence so
+# that callers can handle tool calls from the stream without a second request.
+_TOOL_CALL_PREFIX = "\x00tool_call\x00"
+
+# Prefix for incremental tool-call argument deltas streamed before a tool call
+# is complete — callers can use these for live UI updates.
+_TOOL_CALL_DELTA_PREFIX = "\x00tool_call_delta\x00"
+
+# Kept for import compatibility; no longer raised by chat_stream.
+class _ToolCallsDetected(Exception):
+    """Deprecated sentinel — no longer raised; kept for backwards compatibility."""
+
 
 # Standard chat-completion message keys.
 _ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"})
@@ -334,6 +348,134 @@ class LiteLLMProvider(LLMProvider):
             reasoning_content=reasoning_content,
             thinking_blocks=thinking_blocks,
         )
+
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream final-response tokens via LiteLLM streaming.
+
+        Only streams the final (non-tool-call) assistant turn.  If the first
+        response contains tool calls we fall back to the regular non-streaming
+        ``chat()`` path so the tool loop still works correctly.  Yields text
+        delta strings as they arrive from the provider.
+
+        Thinking/reasoning deltas are prefixed with a sentinel so callers can
+        route them to a separate UI surface:
+
+            "\x00think\x00" + thinking_text   — reasoning delta chunk
+            plain string                       — regular content delta
+        """
+        original_model = model or self.default_model
+        resolved_model = self._resolve_model(original_model)
+        extra_msg_keys = self._extra_msg_keys(original_model, resolved_model)
+
+        if self._supports_cache_control(original_model):
+            messages, tools = self._apply_cache_control(messages, tools)
+
+        max_tokens = max(1, max_tokens)
+
+        kwargs: dict[str, Any] = {
+            "model": resolved_model,
+            "messages": self._sanitize_messages(self._sanitize_empty_content(messages), extra_keys=extra_msg_keys),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+
+        self._apply_model_overrides(resolved_model, kwargs)
+
+        if self.api_key:
+            kwargs["api_key"] = self.api_key
+        if self.api_base:
+            kwargs["api_base"] = self.api_base
+        if self.extra_headers:
+            kwargs["extra_headers"] = self.extra_headers
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
+            kwargs["drop_params"] = True
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        # Thinking chunks are prefixed with "\x00think\x00" so callers can
+        # display them in a separate reasoning bubble.
+        # Incremental tool-call argument deltas are yielded as they arrive with
+        # _TOOL_CALL_DELTA_PREFIX so callers can show live build-up in the UI.
+        # Each *complete* tool call is yielded individually with _TOOL_CALL_PREFIX
+        # as soon as it is finished (when the next index appears or at end of
+        # stream) so callers can execute it without waiting for the full batch.
+        _THINK_PREFIX = "\x00think\x00"
+
+        # index → {"id": str, "name": str, "arguments": str}
+        accumulated_tool_calls: dict[int, dict[str, str]] = {}
+        # Indices whose complete tool-call chunk has already been yielded.
+        finalized_indices: set[int] = set()
+
+        try:
+            stream = await acompletion(**kwargs)
+            async for chunk in stream:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if delta is None:
+                    continue
+
+                if getattr(delta, "tool_calls", None):
+                    for tc_delta in delta.tool_calls:
+                        idx = getattr(tc_delta, "index", 0) or 0
+
+                        # When a higher index appears all lower indices are complete.
+                        for prev_idx in sorted(accumulated_tool_calls.keys()):
+                            if prev_idx < idx and prev_idx not in finalized_indices:
+                                yield _TOOL_CALL_PREFIX + json.dumps([accumulated_tool_calls[prev_idx]])
+                                finalized_indices.add(prev_idx)
+
+                        if idx not in accumulated_tool_calls:
+                            accumulated_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+
+                        tc = accumulated_tool_calls[idx]
+                        if getattr(tc_delta, "id", None):
+                            tc["id"] = tc_delta.id
+                        fn = getattr(tc_delta, "function", None)
+                        if fn:
+                            if getattr(fn, "name", None):
+                                tc["name"] += fn.name
+                            if getattr(fn, "arguments", None):
+                                tc["arguments"] += fn.arguments
+
+                        # Stream a delta so callers can show live argument build-up.
+                        if tc["name"] or tc["arguments"]:
+                            yield _TOOL_CALL_DELTA_PREFIX + json.dumps({
+                                "index": idx,
+                                "id": tc["id"],
+                                "name": tc["name"],
+                                "arguments": tc["arguments"],
+                            })
+
+                # Anthropic extended thinking / DeepSeek reasoning deltas
+                thinking_text = (
+                    getattr(delta, "reasoning_content", None)
+                    or getattr(delta, "thinking", None)
+                )
+                if thinking_text:
+                    yield _THINK_PREFIX + thinking_text
+
+                text = getattr(delta, "content", None)
+                if text:
+                    yield text
+
+            # Finalize any tool calls not yet yielded (the last index or sole call).
+            for idx in sorted(accumulated_tool_calls.keys()):
+                if idx not in finalized_indices:
+                    yield _TOOL_CALL_PREFIX + json.dumps([accumulated_tool_calls[idx]])
+
+        except Exception as e:
+            logger.warning("Streaming failed, no tokens yielded: {}", e)
+            return
 
     def get_default_model(self) -> str:
         """Get the default model."""

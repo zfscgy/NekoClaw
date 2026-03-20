@@ -39,6 +39,10 @@ def get_workspace_path(workspace: str | None = None) -> Path:
     path = Path(workspace).expanduser() if workspace else Path.home() / ".nanobot" / "workspace"
     return ensure_dir(path)
 
+def get_backup_dir() -> Path:
+    """Return the backup directory."""
+    return Path.home() / ".nanobot" / "backup"
+
 
 def get_cli_history_path() -> Path:
     """Return the shared CLI history file path."""

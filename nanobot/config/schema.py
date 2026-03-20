@@ -199,6 +199,15 @@ class QQConfig(Base):
     )  # Allowed user openids (empty = public access)
 
 
+class NanochatConfig(Base):
+    """Nanochat web UI channel configuration."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = 8899
+    allow_from: list[str] = Field(default_factory=lambda: ["*"])  # "*" = allow all
+    send_progress: bool = True  # always show streaming thinking/progress in the web UI
+    send_tool_hints: bool = True  # show tool-call steps in the web UI (default on)
 
 
 class ChannelsConfig(Base):
@@ -216,6 +225,7 @@ class ChannelsConfig(Base):
     slack: SlackConfig = Field(default_factory=SlackConfig)
     qq: QQConfig = Field(default_factory=QQConfig)
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
+    nanochat: NanochatConfig = Field(default_factory=NanochatConfig)
 
 
 class AgentDefaults(Base):

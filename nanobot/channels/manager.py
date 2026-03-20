@@ -150,6 +150,22 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning("Matrix channel not available: {}", e)
 
+        # Nanochat web UI channel
+        if self.config.channels.nanochat.enabled:
+            try:
+                from nanobot.channels.nanochat import NanochatChannel
+                self.channels["nanochat"] = NanochatChannel(
+                    self.config.channels.nanochat,
+                    self.bus,
+                )
+                logger.info(
+                    "Nanochat web UI channel enabled at http://{}:{}",
+                    self.config.channels.nanochat.host,
+                    self.config.channels.nanochat.port,
+                )
+            except ImportError as e:
+                logger.warning("Nanochat channel not available: {}", e)
+
         self._validate_allow_from()
 
     def _validate_allow_from(self) -> None:
@@ -217,9 +233,13 @@ class ChannelManager:
                 )
 
                 if msg.metadata.get("_progress"):
-                    if msg.metadata.get("_tool_hint") and not self.config.channels.send_tool_hints:
+                    # Allow per-channel override of send_tool_hints (e.g. nanochat always shows them)
+                    channel_cfg = getattr(self.config.channels, msg.channel, None)
+                    channel_send_progress = getattr(channel_cfg, 'send_progress', self.config.channels.send_progress)
+                    channel_tool_hints = getattr(channel_cfg, 'send_tool_hints', self.config.channels.send_tool_hints)
+                    if msg.metadata.get("_tool_hint") and not channel_tool_hints:
                         continue
-                    if not msg.metadata.get("_tool_hint") and not self.config.channels.send_progress:
+                    if not msg.metadata.get("_tool_hint") and not channel_send_progress:
                         continue
 
                 channel = self.channels.get(msg.channel)

@@ -44,6 +44,7 @@ dependencies = [
     "json-repair>=0.57.0,<1.0.0",
     "chardet>=3.0.2,<6.0.0",
     "openai>=2.8.0",
+    "aiohttp>=3.9,<4.0",
 ]
 
 [project.optional-dependencies]
@@ -81,18 +82,21 @@ include = [
     "nanobot/templates/**/*.md",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
+    "nanochat/nanochat_frontend/**",
 ]
 
 [tool.hatch.build.targets.sdist]
 include = [
     "nanobot/",
     "bridge/",
+    "nanochat/",
     "README.md",
     "LICENSE",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
 "bridge" = "nanobot/bridge"
+"nanochat" = "nanochat"
 
 [tool.ruff]
 line-length = 100

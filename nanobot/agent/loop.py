@@ -24,7 +24,7 @@ from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMProvider
+from nanobot.providers.base import LLMProvider, ToolCallRequest
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
@@ -159,6 +159,11 @@ class AgentLoop:
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
 
+    def _message_was_sent(self) -> bool:
+        """Return True if the message tool fired during this turn."""
+        mt = self.tools.get("message")
+        return isinstance(mt, MessageTool) and mt._sent_in_turn
+
     @staticmethod
     def _strip_think(text: str | None) -> str | None:
         """Remove <think>…</think> blocks that some models embed in content."""
@@ -167,33 +172,267 @@ class AgentLoop:
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
 
     @staticmethod
-    def _tool_hint(tool_calls: list) -> str:
-        """Format tool calls as concise hint, e.g. 'web_search("query")'."""
-        def _fmt(tc):
-            args = (tc.arguments[0] if isinstance(tc.arguments, list) else tc.arguments) or {}
-            val = next(iter(args.values()), None) if isinstance(args, dict) else None
-            if not isinstance(val, str):
-                return tc.name
-            return f'{tc.name}("{val[:40]}…")' if len(val) > 40 else f'{tc.name}("{val}")'
-        return ", ".join(_fmt(tc) for tc in tool_calls)
+    def _format_tool_call(tc) -> str:
+        """Format a single tool call as name(arg1=val1, arg2=val2)."""
+        args = tc.arguments or {}
+        if isinstance(args, list):
+            args = {}
+        if not args:
+            return tc.name + "()"
+        parts = []
+        for k, v in args.items():
+            if isinstance(v, str):
+                s = repr(v) if len(v) <= 60 else repr(v[:57] + "...")
+            elif isinstance(v, (int, float, bool)):
+                s = str(v)
+            elif v is None:
+                s = "None"
+            else:
+                s = repr(v) if len(repr(v)) <= 60 else repr(v)[:57] + "..."
+            parts.append(f"{k}={s}")
+        return f"{tc.name}({', '.join(parts)})"
+
+    @staticmethod
+    def _normalize_thinking_text(value: Any) -> str | None:
+        """Best-effort extraction of plain thinking text from provider payloads."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value.strip()
+            return text or None
+        if isinstance(value, list):
+            parts: list[str] = []
+            for item in value:
+                extracted = AgentLoop._normalize_thinking_text(item)
+                if extracted:
+                    parts.append(extracted)
+            merged = "\n".join(parts).strip()
+            return merged or None
+        if isinstance(value, dict):
+            parts: list[str] = []
+            for key in ("thinking", "reasoning_content", "text", "content", "value"):
+                extracted = AgentLoop._normalize_thinking_text(value.get(key))
+                if extracted:
+                    parts.append(extracted)
+            merged = "\n".join(parts).strip()
+            return merged or None
+        return None
+
+    @classmethod
+    def _extract_thinking_text(cls, response: Any) -> str | None:
+        """Merge all known provider thinking fields into one displayable string."""
+        merged: list[str] = []
+        seen: set[str] = set()
+
+        def _push(text: str | None) -> None:
+            if not text:
+                return
+            clean = text.strip()
+            if not clean or clean in seen:
+                return
+            seen.add(clean)
+            merged.append(clean)
+
+        _push(cls._strip_think(getattr(response, "content", None)))
+        _push(cls._normalize_thinking_text(getattr(response, "reasoning_content", None)))
+        _push(cls._normalize_thinking_text(getattr(response, "thinking_blocks", None)))
+        return "\n\n".join(merged) if merged else None
+
+    @staticmethod
+    async def _stream_thinking(
+        text: str,
+        on_progress: Callable[..., Awaitable[None]],
+        *,
+        chunk_chars: int = 24,
+    ) -> None:
+        """Emit thinking incrementally so UI can render a streaming thought trail."""
+        clean = text.strip()
+        if not clean:
+            return
+        if len(clean) <= chunk_chars:
+            await on_progress(clean)
+            return
+
+        acc = ""
+        for idx in range(0, len(clean), chunk_chars):
+            acc += clean[idx:idx + chunk_chars]
+            await on_progress(acc)
 
     async def _run_agent_loop(
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
+        on_token: Callable[[str], Awaitable[None]] | None = None,
+        on_think: Callable[[str], Awaitable[None]] | None = None,
+        on_tool_call_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
-        """Run the agent iteration loop. Returns (final_content, tools_used, messages)."""
+        """Run the agent iteration loop. Returns (final_content, tools_used, messages).
+
+        on_token: if provided, called with each text chunk of the *final*
+        (non-tool-call) response as it streams from the provider.  Intermediate
+        tool-call turns always use the non-streaming path.
+
+        on_think: if provided, called with each thinking/reasoning delta chunk
+        during streaming so the UI can display live reasoning without mixing it
+        into the main response text.
+
+        on_tool_call_delta: if provided, called with incremental tool-call
+        argument JSON strings as they stream in, so the UI can show live
+        build-up of tool call arguments before the call is executed.
+        """
         messages = initial_messages
         iteration = 0
         final_content = None
         tools_used: list[str] = []
+        # Set to True when thinking was already streamed via on_think during a
+        # _do_stream attempt that fell through to chat().  Prevents the blocking
+        # chat() fallback from re-sending the same thinking via on_progress.
+        _thinking_already_streamed = False
 
         while iteration < self.max_iterations:
             iteration += 1
+            _thinking_already_streamed = False
+
+            # ------------------------------------------------------------------
+            # Streaming path: chat_stream() now accumulates tool calls internally
+            # and yields them as a _TOOL_CALL_PREFIX-encoded JSON chunk at the
+            # end of the stream.  This lets us handle tool calls without a second
+            # LLM request.  Falls through to blocking chat() only on real errors
+            # (network failures, provider-side exceptions).
+            # ------------------------------------------------------------------
+            _THINK_PREFIX = "\x00think\x00"
+            _TOOL_CALL_PREFIX = "\x00tool_call\x00"
+            _TOOL_CALL_DELTA_PREFIX = "\x00tool_call_delta\x00"
+
+            async def _do_stream(tools_arg) -> tuple[list[str], list[ToolCallRequest] | None]:
+                """Run chat_stream, routing chunks to on_token / on_think / on_tool_call_delta.
+
+                Thinking chunks (prefixed with _THINK_PREFIX) go to on_think.
+                Tool-call delta chunks (_TOOL_CALL_DELTA_PREFIX) go to on_tool_call_delta
+                so the UI can show live argument build-up.
+                Complete tool-call chunks (_TOOL_CALL_PREFIX) are parsed and accumulated
+                — the provider yields one per complete tool call so each arrives as soon
+                as it is finished rather than in a single batch at the end.
+                Regular content chunks go to on_token.
+
+                Returns (content_chunks, tool_calls).
+                tool_calls is None when no tool calls were detected.
+                On a hard streaming error both lists/values are empty/None and
+                the caller should fall back to the blocking chat() path.
+                """
+                nonlocal _thinking_already_streamed
+                content_chunks: list[str] = []
+                tool_calls: list[ToolCallRequest] | None = None
+                try:
+                    async for chunk in self.provider.chat_stream(
+                        messages=messages,
+                        tools=tools_arg,
+                        model=self.model,
+                        temperature=self.temperature,
+                        max_tokens=self.max_tokens,
+                        reasoning_effort=self.reasoning_effort,
+                    ):
+                        if chunk.startswith(_TOOL_CALL_PREFIX):
+                            # Each chunk carries exactly one complete tool call.
+                            # Accumulate across multiple chunks (one per call index).
+                            raw = json.loads(chunk[len(_TOOL_CALL_PREFIX):])
+                            if tool_calls is None:
+                                tool_calls = []
+                            for tc in raw:
+                                try:
+                                    args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                                except Exception:
+                                    args = {}
+                                tool_calls.append(ToolCallRequest(
+                                    id=tc["id"],
+                                    name=tc["name"],
+                                    arguments=args,
+                                ))
+                        elif chunk.startswith(_TOOL_CALL_DELTA_PREFIX):
+                            delta_json = chunk[len(_TOOL_CALL_DELTA_PREFIX):]
+                            if on_tool_call_delta:
+                                await on_tool_call_delta(delta_json)
+                        elif chunk.startswith(_THINK_PREFIX):
+                            thinking_text = chunk[len(_THINK_PREFIX):]
+                            if thinking_text:
+                                if on_think:
+                                    await on_think(thinking_text)
+                                    _thinking_already_streamed = True
+                                elif on_progress:
+                                    # Fallback: route thinking to on_progress
+                                    # when no dedicated think callback is set.
+                                    await on_progress(thinking_text)
+                                    _thinking_already_streamed = True
+                        else:
+                            content_chunks.append(chunk)
+                            if on_token:
+                                await on_token(chunk)
+                except Exception:
+                    # Hard streaming error → signal caller to fall back to chat().
+                    return [], None
+                return content_chunks, tool_calls
+
+            # Omit tools once at least one tool call has been made — this forces
+            # the model to give a plain-text final answer and prevents it from
+            # looping back into more tool calls (which can cause duplicate sends).
+            # The same value is used for both the streaming attempt and the
+            # blocking chat() fallback below so they stay in sync.
+            tools_arg = self.tools.get_definitions() if not tools_used else None
+
+            if on_token is not None:
+                # Always attempt streaming.  chat_stream() returns tool calls as
+                # structured data so no second request is ever needed.
+                chunks, stream_tool_calls = await _do_stream(tools_arg)
+
+                if stream_tool_calls is not None:
+                    # Tool calls arrived from the stream — process them directly.
+                    # Any content chunks emitted before the tool calls are discarded
+                    # (edge case: model prefixed tool calls with stray text).
+                    if on_progress:
+                        for tc in stream_tool_calls:
+                            await on_progress(self._format_tool_call(tc), tool_hint=True)
+
+                    tool_call_dicts = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False),
+                            },
+                        }
+                        for tc in stream_tool_calls
+                    ]
+                    assistant_content = "".join(chunks) if chunks else None
+                    messages = self.context.add_assistant_message(
+                        messages, assistant_content, tool_call_dicts,
+                    )
+                    for tc in stream_tool_calls:
+                        tools_used.append(tc.name)
+                        args_str = json.dumps(tc.arguments, ensure_ascii=False)
+                        logger.info("Tool call: {}({})", tc.name, args_str[:200])
+                        result = await self.tools.execute(tc.name, tc.arguments)
+                        messages = self.context.add_tool_result(
+                            messages, tc.id, tc.name, result,
+                        )
+                    if self._message_was_sent():
+                        break
+                    continue  # next iteration — model will now give the final answer
+
+                elif chunks:
+                    # Streaming produced a final answer with no tool calls.
+                    streamed_text = "".join(chunks)
+                    clean = self._strip_think(streamed_text)
+                    messages = self.context.add_assistant_message(messages, clean)
+                    final_content = clean
+                    break
+
+                # Hard streaming error (empty chunks, no tool calls) →
+                # fall through to the blocking chat() path below.
 
             response = await self.provider.chat(
                 messages=messages,
-                tools=self.tools.get_definitions(),
+                tools=tools_arg,
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
@@ -202,10 +441,14 @@ class AgentLoop:
 
             if response.has_tool_calls:
                 if on_progress:
-                    thought = self._strip_think(response.content)
-                    if thought:
-                        await on_progress(thought)
-                    await on_progress(self._tool_hint(response.tool_calls), tool_hint=True)
+                    # Only emit thinking from the blocking call if it was not
+                    # already streamed live via on_think / on_progress above.
+                    if not _thinking_already_streamed:
+                        thought = self._extract_thinking_text(response)
+                        if thought:
+                            await self._stream_thinking(thought, on_progress)
+                    for tc in response.tool_calls:
+                        await on_progress(self._format_tool_call(tc), tool_hint=True)
 
                 tool_call_dicts = [
                     {
@@ -232,6 +475,8 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+                if self._message_was_sent():
+                    break
             else:
                 clean = self._strip_think(response.content)
                 # Don't persist error responses to session history — they can
@@ -240,6 +485,13 @@ class AgentLoop:
                     logger.error("LLM returned error: {}", (clean or "")[:200])
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
                     break
+                if clean is None:
+                    logger.warning(
+                        "LLM returned empty content (finish_reason={}, content={!r}); "
+                        "treating as no response",
+                        response.finish_reason,
+                        response.content,
+                    )
                 messages = self.context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
@@ -332,6 +584,7 @@ class AgentLoop:
         msg: InboundMessage,
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_token: Callable[[str], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         # System messages: parse origin from chat_id ("channel:chat_id")
@@ -432,12 +685,53 @@ class AgentLoop:
                 channel=msg.channel, chat_id=msg.chat_id, content=content, metadata=meta,
             ))
 
+        async def _bus_stream_token(token: str) -> None:
+            meta = dict(msg.metadata or {})
+            meta["_stream_token"] = True
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content=token, metadata=meta,
+            ))
+
+        async def _bus_stream_think(token: str) -> None:
+            meta = dict(msg.metadata or {})
+            meta["_stream_think"] = True
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content=token, metadata=meta,
+            ))
+
+        async def _bus_stream_tool_delta(delta_json: str) -> None:
+            meta = dict(msg.metadata or {})
+            meta["_stream_tool_delta"] = True
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content=delta_json, metadata=meta,
+            ))
+
+        # Use on_token if explicitly provided; otherwise default to _bus_stream_token
+        # only for channels that support streaming (nanochat sets metadata["_streaming"]).
+        _is_streaming = (msg.metadata or {}).get("_streaming")
+        _effective_on_token = on_token
+        if _effective_on_token is None and _is_streaming:
+            _effective_on_token = _bus_stream_token
+        _effective_on_think = _bus_stream_think if _is_streaming else None
+        _effective_on_tool_call_delta = _bus_stream_tool_delta if _is_streaming else None
+
         final_content, _, all_msgs = await self._run_agent_loop(
-            initial_messages, on_progress=on_progress or _bus_progress,
+            initial_messages,
+            on_progress=on_progress or _bus_progress,
+            on_token=_effective_on_token,
+            on_think=_effective_on_think,
+            on_tool_call_delta=_effective_on_tool_call_delta,
         )
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
+            # Patch the fallback into all_msgs so _save_turn records a proper
+            # assistant turn. Without this the session ends with a bare user
+            # message; subsequent LLM calls then see two consecutive user
+            # messages, which many models reject or mishandle — producing the
+            # same empty-response loop on every subsequent message.
+            all_msgs = list(all_msgs)
+            all_msgs.append({"role": "assistant", "content": final_content})
 
         self._save_turn(session, all_msgs, 1 + len(history))
         self.sessions.save(session)
@@ -447,9 +741,11 @@ class AgentLoop:
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
+        meta = dict(msg.metadata or {})
+        meta["_raw_response"] = True
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
-            metadata=msg.metadata or {},
+            metadata=meta,
         )
 
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
@@ -501,9 +797,12 @@ class AgentLoop:
         channel: str = "cli",
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_token: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Process a message directly (for CLI or cron usage)."""
         await self._connect_mcp()
         msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-        response = await self._process_message(msg, session_key=session_key, on_progress=on_progress)
+        response = await self._process_message(
+            msg, session_key=session_key, on_progress=on_progress, on_token=on_token,
+        )
         return response.content if response else ""
