@@ -414,12 +414,15 @@ class LiteLLMProvider(LLMProvider):
 
         # index → {"id": str, "name": str, "arguments": str}
         accumulated_tool_calls: dict[int, dict[str, str]] = {}
-        # Indices whose complete tool-call chunk has already been yielded.
+        # Indices whose complete tool-call chunk has already been W.
         finalized_indices: set[int] = set()
 
         try:
+            # logger.info(f"LiteLLM messages: \n{json.dumps(kwargs['messages'], indent=2, ensure_ascii=False)}")
+            # logger.info(f"LiteLLLM tools: \n{json.dumps(kwargs['tools'], indent=2, ensure_ascii=False)}")
             stream = await acompletion(**kwargs)
             async for chunk in stream:
+                # logger.info(f"LiteLLM chunk: {chunk}")
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta is None:
                     continue

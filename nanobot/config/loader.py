@@ -28,13 +28,23 @@ def _get_providers_path(config_path: Path) -> Path:
     return config_path.parent / "providers.json"
 
 
+def _get_channels_path(config_path: Path) -> Path:
+    """Return the channels.json path alongside the given config file."""
+    return config_path.parent / "channels.json"
+
+
+def _get_tools_path(config_path: Path) -> Path:
+    """Return the tools.json path alongside the given config file."""
+    return config_path.parent / "tools.json"
+
+
 def load_config(config_path: Path | None = None) -> Config:
     """
     Load configuration from file or create default.
 
-    If a providers.json file exists alongside config.json, its contents are
-    used as the providers section (taking precedence over any providers key
-    already present in config.json).
+    If a providers.json, channels.json, or tools.json file exists alongside
+    config.json, its contents are used as the respective section (taking
+    precedence over any matching key already present in config.json).
 
     Args:
         config_path: Optional path to config file. Uses default if not provided.
@@ -50,13 +60,17 @@ def load_config(config_path: Path | None = None) -> Config:
                 data = json.load(f)
             data = _migrate_config(data)
 
-            providers_path = _get_providers_path(path)
-            if providers_path.exists():
-                try:
-                    with open(providers_path, encoding="utf-8") as f:
-                        data["providers"] = json.load(f)
-                except (json.JSONDecodeError, ValueError) as e:
-                    print(f"Warning: Failed to load providers from {providers_path}: {e}")
+            for key, sidecar_path in (
+                ("providers", _get_providers_path(path)),
+                ("channels", _get_channels_path(path)),
+                ("tools", _get_tools_path(path)),
+            ):
+                if sidecar_path.exists():
+                    try:
+                        with open(sidecar_path, encoding="utf-8") as f:
+                            data[key] = json.load(f)
+                    except (json.JSONDecodeError, ValueError) as e:
+                        print(f"Warning: Failed to load {key} from {sidecar_path}: {e}")
 
             return Config.model_validate(data)
         except (json.JSONDecodeError, ValueError) as e:
@@ -70,9 +84,9 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
     """
     Save configuration to file.
 
-    If a providers.json file already exists alongside config.json, providers
-    are saved there and omitted from config.json. Otherwise everything is
-    saved to config.json as before.
+    If a providers.json, channels.json, or tools.json file already exists
+    alongside config.json, the respective section is saved there and omitted
+    from config.json. Otherwise everything is saved to config.json as before.
 
     Args:
         config: Configuration to save.
@@ -83,11 +97,15 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
 
     data = config.model_dump(by_alias=True)
 
-    providers_path = _get_providers_path(path)
-    if providers_path.exists():
-        providers_data = data.pop("providers", {})
-        with open(providers_path, "w", encoding="utf-8") as f:
-            json.dump(providers_data, f, indent=2, ensure_ascii=False)
+    for key, sidecar_path in (
+        ("providers", _get_providers_path(path)),
+        ("channels", _get_channels_path(path)),
+        ("tools", _get_tools_path(path)),
+    ):
+        if sidecar_path.exists():
+            section_data = data.pop(key, {})
+            with open(sidecar_path, "w", encoding="utf-8") as f:
+                json.dump(section_data, f, indent=2, ensure_ascii=False)
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)

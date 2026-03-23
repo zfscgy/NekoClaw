@@ -4,21 +4,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nanobot.tools.web_search import search_duckduckgo
+from nanobot.tools.web_search import searxng_search
 
 
 def test__search_duckduckgo():
-    query = "2026年3月20日新闻"
-    results = search_duckduckgo(query, 10)
+    query = "今日头条 新闻 2026年3月22日 国际 国内"
+    results = searxng_search(query, 10)
     assert len(results) == 10
     assert all(isinstance(result, dict) for result in results)
     assert all("title" in result for result in results)
-    assert all("href" in result for result in results)
+    assert all("url" in result for result in results)
     assert all("body" in result for result in results)
+    assert all("source" in result for result in results)
     for result in results:
         print(result["title"])
-        print(result["href"])
+        print(result["url"])
         print(result["body"])
+        print(result["source"])
         print("--------")
 
 

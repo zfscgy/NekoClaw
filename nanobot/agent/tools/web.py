@@ -11,7 +11,7 @@ import httpx
 from loguru import logger
 
 from nanobot.agent.tools.base import Tool
-from nanobot.tools.web_search import search_duckduckgo
+from nanobot.tools.web_search import searxng_search
 
 # Shared constants
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
@@ -59,19 +59,19 @@ class WebSearchTool(Tool):
         "required": ["query"]
     }
 
-    def __init__(self, max_results: int = 5):
+    def __init__(self, max_results: int = 10):
         self.max_results = max_results
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
         n = min(max(count or self.max_results, 1), 50)
         try:
-            results = await asyncio.to_thread(search_duckduckgo, query, n)
+            results = await asyncio.to_thread(searxng_search, query, n)
             if not results:
                 return f"No results for: {query}"
 
             lines = [f"Results for: {query}\n"]
             for i, item in enumerate(results, 1):
-                lines.append(f"{i}. {item.get('title', '')}\n   {item.get('href', '')}")
+                lines.append(f"{i}. {item.get('title', '')}\n   {item.get('url', '')} ({item.get('source', '')})")
                 if body := item.get("body"):
                     lines.append(f"   {body}")
             return "\n".join(lines)

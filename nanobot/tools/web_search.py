@@ -1,10 +1,28 @@
-from ddgs import DDGS
+import requests
+
+from nanobot.config import load_config
 
 
-def search_duckduckgo(query: str, n: int) -> list[dict[str, str]]:
-    """Return up to n DuckDuckGo text search results for the given query.
+search_config = load_config().tools.web.search
 
-    Each result is a dict with keys: title, href, body.
+
+def searxng_search(text: str, max_results: int = search_config.max_results) -> list[dict[str, str]]:
+    """Return up to max_results search results for the given text.
+
+    Each result is a dict with keys: title, url, body, source.
     """
-    with DDGS() as ddgs:
-        return ddgs.text(query, max_results=n, backend="google,bing,brave,duckduckgo,yahoo,wkipedia,grokipedia")
+    searxng_url = search_config.searxng_url
+    url = f"{searxng_url}/search"
+    params = {
+        "q": text,
+        "format": "json"
+    }
+    response = requests.get(url, params=params)
+    results = [{
+        "title": r["title"],
+        "body": r["content"],
+        "url": r["url"],
+        "source": r["engine"]
+    } for r in response.json()["results"][:max_results]]
+
+    return results

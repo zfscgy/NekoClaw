@@ -57,7 +57,6 @@ class AgentLoop:
         max_tokens: int = 4096,
         memory_window: int = 100,
         reasoning_effort: str | None = None,
-        brave_api_key: str | None = None,
         web_proxy: str | None = None,
         exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
@@ -77,7 +76,6 @@ class AgentLoop:
         self.max_tokens = max_tokens
         self.memory_window = memory_window
         self.reasoning_effort = reasoning_effort
-        self.brave_api_key = brave_api_key
         self.web_proxy = web_proxy
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
@@ -94,7 +92,6 @@ class AgentLoop:
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             reasoning_effort=reasoning_effort,
-            brave_api_key=brave_api_key,
             web_proxy=web_proxy,
             exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
@@ -372,12 +369,9 @@ class AgentLoop:
                     return [], None
                 return content_chunks, tool_calls
 
-            # Omit tools once at least one tool call has been made — this forces
-            # the model to give a plain-text final answer and prevents it from
-            # looping back into more tool calls (which can cause duplicate sends).
-            # The same value is used for both the streaming attempt and the
-            # blocking chat() fallback below so they stay in sync.
-            tools_arg = self.tools.get_definitions() if not tools_used else None
+            # Always pass the full tool definitions so the model can make multiple
+            # sequential tool calls. 
+            tools_arg = self.tools.get_definitions()
 
             if on_token is not None:
                 # Always attempt streaming.  chat_stream() returns tool calls as
