@@ -220,12 +220,11 @@ export function useChat() {
           if (c) c.preview = (msg.content || '').slice(0, 80)
         }
       } else if (msg.type === 'progress') {
-        const arr = messagesByConv.value[cid]
-        if (arr.length && arr[arr.length - 1].type === 'progress') {
-          arr[arr.length - 1] = msg
-        } else {
-          arr.push(msg)
-        }
+        // Always append — progress entries are either thinking blocks (must be
+        // preserved) or discrete status items.  Never replace the previous entry
+        // because that would silently delete a thinking block that was just
+        // committed by stream_end.
+        messagesByConv.value[cid].push(msg)
       } else {
         // For tool_call messages, flush any accumulated thinking first to preserve time order.
         if (msg.type === 'tool_call' && streamingThinking.value) {
@@ -243,7 +242,15 @@ export function useChat() {
       isTyping.value = false
       _clearStreamingState()
       wsReconnectTimer = setTimeout(() => {
-        if (wsGeneration === myGen && activeId.value === convId) connectWs(convId)
+        if (wsGeneration === myGen && activeId.value === convId) {
+          // Reset messages so the history replay from the server is the sole
+          // source of truth — avoids duplicating items that were already
+          // accumulated during the live-streaming phase.
+          messagesByConv.value[convId] = []
+          for (const k of Object.keys(_openCache)) delete _openCache[k]
+          groupOpenState.value = {}
+          connectWs(convId)
+        }
       }, 3000)
     }
 
@@ -274,12 +281,18 @@ export function useChat() {
     _clearStreamingState()
     for (const k of Object.keys(_openCache)) delete _openCache[k]
     groupOpenState.value = {}
-    if (!messagesByConv.value[id]) messagesByConv.value[id] = []
+    // Always reset so the WebSocket history replay is the authoritative source
+    // of truth.  Keeping stale client-side data causes duplicate tool_call
+    // entries because the backend replays them without deduplication.
+    messagesByConv.value[id] = []
     connectWs(id)
     nextTick(scrollToBottom)
   }
 
-  function deleteConversation(id) {
+  async function deleteConversation(id) {
+    try {
+      await fetch(`/api/conversations/${id}`, { method: 'DELETE' })
+    } catch (_) {}
     conversations.value = conversations.value.filter(c => c.id !== id)
     delete messagesByConv.value[id]
     if (activeId.value === id) {
@@ -364,7 +377,17 @@ export function useChat() {
     if (e.key === 'Escape') lightboxSrc.value = null
   }
 
-  onMounted(() => window.addEventListener('keydown', onKeydown))
+  onMounted(async () => {
+    window.addEventListener('keydown', onKeydown)
+    try {
+      const res = await fetch('/api/conversations')
+      const data = await res.json()
+      conversations.value = (data.conversations || []).map(c => ({
+        id: c.id,
+        preview: c.last_message || '',
+      }))
+    } catch (_) {}
+  })
   onUnmounted(() => {
     window.removeEventListener('keydown', onKeydown)
     _closeWs()

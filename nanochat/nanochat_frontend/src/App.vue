@@ -25,7 +25,7 @@
             <div v-if="activeId" class="messages-inner">
               <template v-for="(group, gi) in messageGroups" :key="gi">
                 <ActionGroup
-                  v-if="group.type === 'actions' && (!isLiveStreaming || gi < messageGroups.length - 1)"
+                  v-if="group.type === 'actions'"
                   :items="group.items"
                   :is-open="groupOpenState[group.key]"
                   @toggle="setGroupOpen(group.key, $event)"

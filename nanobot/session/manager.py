@@ -55,6 +55,10 @@ class Session:
 
         out: list[dict[str, Any]] = []
         for m in sliced:
+            # Entries tagged _ui_only are stored for the UI (thinking/reasoning) but
+            # must never be fed back to the LLM as part of the message context.
+            if m.get("_ui_only"):
+                continue
             entry: dict[str, Any] = {"role": m["role"], "content": m.get("content", "")}
             for k in ("tool_calls", "tool_call_id", "name"):
                 if k in m:

@@ -74,17 +74,33 @@ def _register_file(path: str) -> str:
 
 
 class NanochatChannel(BaseChannel):
-    """Chat web UI channel serving Vue.js frontend + REST + WebSocket API."""
+    """Chat web UI channel serving Vue.js frontend + REST + WebSocket API.
+
+    Conversation history is stored in the standard agent session JSONL files
+    (``~/.nanobot/sessions/nanochat_<cid>.jsonl``), which are the single source
+    of truth for both the LLM context and the UI display.  Thinking/reasoning
+    blocks are stored as ``_ui_only: true`` entries inside those same files so
+    they survive restarts without ever being fed back to the model.
+    """
 
     name = "nanochat"
 
     def __init__(self, config: NanochatConfig, bus: MessageBus):
         super().__init__(config, bus)
         self.config: NanochatConfig = config
-        # conversation_id -> set of WebSocket connections
+        # conversation_id -> set of active WebSocket connections
         self._ws_connections: dict[str, set] = {}
-        # conversation_id -> list of message dicts (for history replay on reconnect)
-        self._history: dict[str, list[dict[str, Any]]] = {}
+        # conversation_ids with an LLM turn currently in-flight
+        self._active_streams: set[str] = set()
+        # conversation_id -> ordered list of WS payload dicts representing the
+        # in-flight turn's committed rounds (stream_think_delta + stream_end +
+        # tool_call per round).  Used to replay mid-turn history when a new
+        # WebSocket client reconnects while generation is still running.
+        self._stream_segments: dict[str, list[dict]] = {}
+        # Per-conversation accumulation of the *current* in-progress LLM round
+        # (reset each time a round commits via stream_end + tool_call).
+        # Shape: {"thinking": str, "tool_deltas": {index: {name, arguments}}, "content": str}
+        self._cur_round: dict[str, dict] = {}
         self._app: Any = None
         self._runner: Any = None
         self._site: Any = None
@@ -124,6 +140,141 @@ class NanochatChannel(BaseChannel):
             await self._runner.cleanup()
         logger.info("Nanochat web UI stopped")
 
+    # ------------------------------------------------------------------
+    # Session helpers — read & translate session JSONL to UI format
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _session_path(cid: str) -> Path:
+        from nanobot.config.paths import get_sessions_dir
+        from nanobot.utils.helpers import safe_filename
+        safe_key = safe_filename(f"nanochat_{cid}")
+        return get_sessions_dir() / f"{safe_key}.jsonl"
+
+    @staticmethod
+    def _read_session_messages(cid: str) -> list[dict[str, Any]]:
+        """Read raw messages from the session JSONL for this conversation."""
+        path = NanochatChannel._session_path(cid)
+        if not path.exists():
+            return []
+        messages: list[dict[str, Any]] = []
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    if data.get("_type") == "metadata":
+                        continue
+                    messages.append(data)
+        except Exception as exc:
+            logger.warning("Failed to read session for {}: {}", cid, exc)
+        return messages
+
+    @staticmethod
+    def _session_to_ui(cid: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Translate raw session messages into nanochat UI-format entries.
+
+        Mapping:
+          _ui_only entries (streaming thinking)  → type: progress
+          role: user                              → type: message, role: user
+          role: assistant + tool_calls            → type: tool_call  (one per call)
+          role: assistant + content               → type: message, role: assistant
+          role: assistant + reasoning_content     → type: progress before the message
+          role: tool / system                     → skipped
+        """
+        ui: list[dict[str, Any]] = []
+        for m in messages:
+            role = m.get("role", "")
+
+            # ── Streaming-path thinking stored as _ui_only entries ──────────
+            if m.get("_ui_only"):
+                content = (m.get("content") or "").strip()
+                if content:
+                    ui.append({
+                        "type": "progress",
+                        "role": "assistant",
+                        "content": content,
+                        "media": [],
+                        "conversation_id": cid,
+                    })
+                continue
+
+            # ── User messages ────────────────────────────────────────────────
+            if role == "user":
+                raw = m.get("content", "")
+                if isinstance(raw, list):
+                    # Multimodal: flatten text parts
+                    raw = " ".join(
+                        c.get("text", "") for c in raw
+                        if isinstance(c, dict) and c.get("type") == "text"
+                    )
+                if raw:
+                    ui.append({
+                        "type": "message",
+                        "role": "user",
+                        "content": raw,
+                        "media": [],
+                        "conversation_id": cid,
+                    })
+
+            # ── Assistant messages ───────────────────────────────────────────
+            elif role == "assistant":
+                # Blocking-path thinking: emit as progress before the message
+                think = (m.get("reasoning_content") or "").strip()
+                if not think:
+                    blocks = m.get("thinking_blocks")
+                    if isinstance(blocks, str):
+                        think = blocks.strip()
+                    elif isinstance(blocks, list):
+                        parts = []
+                        for b in blocks:
+                            if isinstance(b, dict):
+                                for k in ("thinking", "content", "text"):
+                                    if b.get(k):
+                                        parts.append(str(b[k]))
+                                        break
+                        think = "\n".join(parts).strip()
+                if think:
+                    ui.append({
+                        "type": "progress",
+                        "role": "assistant",
+                        "content": think,
+                        "media": [],
+                        "conversation_id": cid,
+                    })
+
+                tool_calls = m.get("tool_calls") or []
+                if tool_calls:
+                    for tc in tool_calls:
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "tool")
+                        args_str = fn.get("arguments", "")
+                        ui.append({
+                            "type": "tool_call",
+                            "role": "assistant",
+                            "content": f"{name}({args_str})",
+                            "media": [],
+                            "conversation_id": cid,
+                        })
+                elif m.get("content"):
+                    ui.append({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": m["content"],
+                        "media": [],
+                        "conversation_id": cid,
+                    })
+
+            # role == "tool" or "system": skip — internal plumbing, not shown in UI
+
+        return ui
+
+    # ------------------------------------------------------------------
+    # Media helpers
+    # ------------------------------------------------------------------
+
     @staticmethod
     def _media_to_urls(paths: list[str]) -> list[str]:
         """Convert filesystem paths to /file/{token} URLs served by this channel.
@@ -146,6 +297,10 @@ class NanochatChannel(BaseChannel):
                 result.append(p)
         return result
 
+    # ------------------------------------------------------------------
+    # Outbound message handler
+    # ------------------------------------------------------------------
+
     async def send(self, msg: OutboundMessage) -> None:
         """Push an outbound message to all WebSocket subscribers of the conversation."""
         conversation_id = msg.chat_id
@@ -154,11 +309,20 @@ class NanochatChannel(BaseChannel):
         is_stream_token = bool(msg.metadata.get("_stream_token"))
         is_stream_think = bool(msg.metadata.get("_stream_think"))
         is_raw_response = bool(msg.metadata.get("_raw_response"))
-
         is_stream_tool_delta = bool(msg.metadata.get("_stream_tool_delta"))
 
         if is_stream_tool_delta:
-            # Incremental tool-call argument delta — send as stream_tool_call_delta; never persist.
+            # Accumulate latest full state per tool-call index for reconnect replay.
+            try:
+                delta = json.loads(msg.content)
+                idx = delta.get("index", 0)
+                cur = self._cur_round.setdefault(conversation_id, {})
+                cur.setdefault("tool_deltas", {})[idx] = {
+                    "name": delta.get("name", ""),
+                    "arguments": delta.get("arguments", ""),
+                }
+            except Exception:
+                pass
             await self._broadcast(conversation_id, {
                 "type": "stream_tool_call_delta",
                 "content": msg.content,
@@ -167,7 +331,11 @@ class NanochatChannel(BaseChannel):
             return
 
         if is_stream_think:
-            # A single streamed thinking chunk — send as stream_think_delta; never persist.
+            # Accumulate thinking text for reconnect replay.
+            # Persistence is handled by AgentLoop._save_turn which writes a
+            # _ui_only entry to the session JSONL after each round completes.
+            cur = self._cur_round.setdefault(conversation_id, {})
+            cur["thinking"] = cur.get("thinking", "") + msg.content
             await self._broadcast(conversation_id, {
                 "type": "stream_think_delta",
                 "content": msg.content,
@@ -176,7 +344,9 @@ class NanochatChannel(BaseChannel):
             return
 
         if is_stream_token:
-            # A single streamed chunk — send as stream_delta; never persist to history.
+            # Accumulate content text for reconnect replay.
+            cur = self._cur_round.setdefault(conversation_id, {})
+            cur["content"] = cur.get("content", "") + msg.content
             await self._broadcast(conversation_id, {
                 "type": "stream_delta",
                 "role": "assistant",
@@ -190,8 +360,6 @@ class NanochatChannel(BaseChannel):
         elif is_progress:
             msg_type = "progress"
         elif is_raw_response:
-            # Plain LLM text response (not via the message tool) — the frontend
-            # routes this into the actions panel when reasoning was present.
             msg_type = "raw_response"
         else:
             msg_type = "message"
@@ -204,14 +372,37 @@ class NanochatChannel(BaseChannel):
             "conversation_id": conversation_id,
         }
 
-        if not is_progress:
-            # Persist final messages to history
-            self._history.setdefault(conversation_id, []).append(payload)
-            # Clear the streaming bubble before delivering the canonical message.
+        # tool_call and final messages (not plain progress) need a stream_end
+        # signal so the frontend flushes its live streaming panel.
+        should_signal = not is_progress or is_tool_hint
+        if should_signal:
+            if is_tool_hint:
+                # Commit the current round into _stream_segments before clearing it.
+                # Order: accumulated thinking → stream_end → tool_call (appended below).
+                cur = self._cur_round.pop(conversation_id, {})
+                segs = self._stream_segments.setdefault(conversation_id, [])
+                if cur.get("thinking"):
+                    segs.append({
+                        "type": "stream_think_delta",
+                        "content": cur["thinking"],
+                        "conversation_id": conversation_id,
+                    })
+                segs.append({"type": "stream_end", "conversation_id": conversation_id})
+            elif msg_type in ("message", "raw_response"):
+                # Turn is done; discard all replay state.
+                self._active_streams.discard(conversation_id)
+                self._stream_segments.pop(conversation_id, None)
+                self._cur_round.pop(conversation_id, None)
+
             await self._broadcast(conversation_id, {
                 "type": "stream_end",
                 "conversation_id": conversation_id,
             })
+
+        # Append committed tool_call to segments so reconnecting clients see it
+        # in the correct position (after the preceding stream_end).
+        if is_tool_hint:
+            self._stream_segments.setdefault(conversation_id, []).append(payload)
 
         await self._broadcast(conversation_id, payload)
 
@@ -233,16 +424,6 @@ class NanochatChannel(BaseChannel):
                 dead.add(ws)
         sockets -= dead
 
-    def _append_user_message(self, conversation_id: str, content: str, media: list[str]) -> None:
-        entry: dict[str, Any] = {
-            "type": "message",
-            "role": "user",
-            "content": content,
-            "media": media,
-            "conversation_id": conversation_id,
-        }
-        self._history.setdefault(conversation_id, []).append(entry)
-
     # ------------------------------------------------------------------
     # Route setup
     # ------------------------------------------------------------------
@@ -254,11 +435,10 @@ class NanochatChannel(BaseChannel):
         app.router.add_get("/api/conversations", self._handle_list_conversations)
         app.router.add_post("/api/conversations", self._handle_new_conversation)
         app.router.add_get("/api/conversations/{conversation_id}/history", self._handle_history)
+        app.router.add_delete("/api/conversations/{conversation_id}", self._handle_delete_conversation)
         app.router.add_post("/api/conversations/{conversation_id}/message", self._handle_message)
         app.router.add_post("/api/conversations/{conversation_id}/command", self._handle_command)
-        # Serve registered files by token (works for any absolute path on the filesystem)
         app.router.add_get("/file/{token}", self._handle_file)
-        # Serve frontend static assets
         app.router.add_get("/assets/{path:.*}", self._handle_assets)
 
     # ------------------------------------------------------------------
@@ -266,7 +446,6 @@ class NanochatChannel(BaseChannel):
     # ------------------------------------------------------------------
 
     async def _handle_index(self, request: Any) -> Any:
-        # Prefer built Vite output; fall back to legacy index.html
         html_path = _FRONTEND_DIST / "index.html" if _FRONTEND_DIST.exists() else _FRONTEND_DIR / "index.html"
         if html_path.exists():
             return aiohttp_web.FileResponse(html_path)
@@ -284,17 +463,10 @@ class NanochatChannel(BaseChannel):
         return aiohttp_web.Response(text="Not found", status=404)
 
     async def _handle_file(self, request: Any) -> Any:
-        """Serve a cached file by its content-hash token.
-
-        Files are copied into a persistent cache at send-time so they remain
-        downloadable even after the agent deletes or regenerates the originals.
-        On a server restart the in-memory registry is empty; we recover by
-        scanning the cache directory for a matching token prefix.
-        """
+        """Serve a cached file by its content-hash token."""
         token = request.match_info["token"]
         file_path = _file_registry.get(token)
 
-        # Registry miss (e.g. after server restart) — scan the cache dir
         if file_path is None:
             try:
                 cache_dir = _get_file_cache_dir()
@@ -302,7 +474,6 @@ class NanochatChannel(BaseChannel):
                 if matches:
                     file_path = matches[0]
                     _file_registry[token] = file_path
-                    logger.debug("Recovered file from cache: token={} path={}", token, file_path)
             except Exception:
                 pass
 
@@ -311,38 +482,71 @@ class NanochatChannel(BaseChannel):
             return aiohttp_web.Response(text="Not found", status=404)
 
         mime, _ = mimetypes.guess_type(str(file_path))
-        # Prefer the ?name= query param; fall back to stripping the token prefix from the cache filename
-        download_name = request.rel_url.query.get("name") or "_".join(file_path.name.split("_")[1:]) or file_path.name
-        headers = {
+        download_name = (
+            request.rel_url.query.get("name")
+            or "_".join(file_path.name.split("_")[1:])
+            or file_path.name
+        )
+        return aiohttp_web.FileResponse(file_path, headers={
             "Content-Type": mime or "application/octet-stream",
             "Content-Disposition": f'attachment; filename="{download_name}"',
-        }
-        return aiohttp_web.FileResponse(file_path, headers=headers)
+        })
 
     async def _handle_list_conversations(self, request: Any) -> Any:
+        """List all nanochat conversations by scanning session JSONL files."""
+        from nanobot.config.paths import get_sessions_dir
+        sessions_dir = get_sessions_dir()
         conversations = []
-        for cid, history in self._history.items():
-            last = next(
-                (m for m in reversed(history) if m.get("type") == "message"),
-                None,
-            )
-            conversations.append({
-                "id": cid,
-                "last_message": last.get("content", "")[:80] if last else "",
-                "message_count": sum(1 for m in history if m.get("type") == "message"),
-            })
+        try:
+            for path in sessions_dir.glob("nanochat_*.jsonl"):
+                try:
+                    meta: dict[str, Any] = {}
+                    last_message = ""
+                    with open(path, encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            data = json.loads(line)
+                            if data.get("_type") == "metadata":
+                                meta = data
+                                continue
+                            if data.get("_ui_only"):
+                                continue
+                            role = data.get("role")
+                            if role == "assistant" and data.get("content"):
+                                last_message = (data["content"] or "")[:80]
+                    key = meta.get("key", "")
+                    if not key.startswith("nanochat:"):
+                        continue
+                    cid = key[len("nanochat:"):]
+                    conversations.append({
+                        "id": cid,
+                        "last_message": last_message,
+                        "_updated_at": meta.get("updated_at", ""),
+                    })
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        conversations.sort(key=lambda c: c.pop("_updated_at", ""), reverse=True)
         return aiohttp_web.json_response({"conversations": conversations})
 
     async def _handle_new_conversation(self, request: Any) -> Any:
         data = await request.json() if request.body_exists else {}
         cid = data.get("id") or str(uuid.uuid4())[:8]
-        self._history.setdefault(cid, [])
         return aiohttp_web.json_response({"conversation_id": cid})
 
     async def _handle_history(self, request: Any) -> Any:
         cid = request.match_info["conversation_id"]
-        history = self._history.get(cid, [])
-        return aiohttp_web.json_response({"history": history})
+        messages = self._read_session_messages(cid)
+        return aiohttp_web.json_response({"history": self._session_to_ui(cid, messages)})
+
+    async def _handle_delete_conversation(self, request: Any) -> Any:
+        cid = request.match_info["conversation_id"]
+        self._active_streams.discard(cid)
+        return aiohttp_web.json_response({"ok": True})
 
     async def _handle_message(self, request: Any) -> Any:
         cid = request.match_info["conversation_id"]
@@ -356,8 +560,7 @@ class NanochatChannel(BaseChannel):
         if not content and not media:
             return aiohttp_web.json_response({"error": "empty message"}, status=400)
 
-        self._append_user_message(cid, content, media)
-        # Echo back to all WS clients (so other tabs see user message)
+        # Echo the user message to all connected WS clients (other tabs).
         await self._broadcast(cid, {
             "type": "message",
             "role": "user",
@@ -365,7 +568,6 @@ class NanochatChannel(BaseChannel):
             "media": media,
             "conversation_id": cid,
         })
-
         await self._handle_message_internal(cid, content, media)
         return aiohttp_web.json_response({"ok": True})
 
@@ -385,6 +587,9 @@ class NanochatChannel(BaseChannel):
     async def _handle_message_internal(
         self, conversation_id: str, content: str, media: list[str]
     ) -> None:
+        self._active_streams.add(conversation_id)
+        self._stream_segments[conversation_id] = []
+        self._cur_round.pop(conversation_id, None)
         await self._broadcast(conversation_id, {
             "type": "stream_start",
             "conversation_id": conversation_id,
@@ -409,12 +614,71 @@ class NanochatChannel(BaseChannel):
         self._ws_connections.setdefault(cid, set()).add(ws)
         logger.debug("WebSocket connected for conversation {}", cid)
 
-        # Replay history on connect
-        for entry in self._history.get(cid, []):
+        # Replay history from the session JSONL.  Tag each entry with _replay
+        # so the frontend knows to always append progress blocks (not coalesce them).
+        session_msgs = self._read_session_messages(cid)
+        for entry in self._session_to_ui(cid, session_msgs):
             try:
-                await ws.send_str(json.dumps(entry, ensure_ascii=False))
+                await ws.send_str(json.dumps({**entry, "_replay": True}, ensure_ascii=False))
             except Exception:
                 break
+
+        # If a turn is still in-flight, replay the full mid-turn state so the
+        # reconnecting client sees the same picture as clients that stayed connected.
+        if cid in self._active_streams:
+            # 1. Reset the live panel first (before any mid-turn segments arrive).
+            try:
+                await ws.send_str(json.dumps({
+                    "type": "stream_start",
+                    "conversation_id": cid,
+                }, ensure_ascii=False))
+            except Exception:
+                pass
+
+            # 2. Replay committed rounds in order: think_delta → stream_end → tool_call.
+            #    The frontend handles these exactly as it would live events, so each
+            #    round's thinking gets flushed into messagesByConv via stream_end and
+            #    tool_call entries land in messagesByConv as well.
+            for seg in self._stream_segments.get(cid, []):
+                try:
+                    await ws.send_str(json.dumps(seg, ensure_ascii=False))
+                except Exception:
+                    break
+
+            # 3. Replay the current in-progress round's partial state.
+            cur = self._cur_round.get(cid, {})
+            thinking = cur.get("thinking", "")
+            if thinking:
+                try:
+                    await ws.send_str(json.dumps({
+                        "type": "stream_think_delta",
+                        "content": thinking,
+                        "conversation_id": cid,
+                    }, ensure_ascii=False))
+                except Exception:
+                    pass
+
+            for idx, delta in cur.get("tool_deltas", {}).items():
+                try:
+                    await ws.send_str(json.dumps({
+                        "type": "stream_tool_call_delta",
+                        "content": json.dumps({"index": idx, **delta}, ensure_ascii=False),
+                        "conversation_id": cid,
+                    }, ensure_ascii=False))
+                except Exception:
+                    pass
+
+            content = cur.get("content", "")
+            if content:
+                try:
+                    await ws.send_str(json.dumps({
+                        "type": "stream_delta",
+                        "role": "assistant",
+                        "content": content,
+                        "conversation_id": cid,
+                    }, ensure_ascii=False))
+                except Exception:
+                    pass
 
         try:
             async for msg in ws:
@@ -429,8 +693,7 @@ class NanochatChannel(BaseChannel):
                         content = (data.get("content") or "").strip()
                         media = data.get("media") or []
                         if content or media:
-                            self._append_user_message(cid, content, media)
-                            # Broadcast user message to other subscribers
+                            # Echo to other subscribers
                             await self._broadcast(cid, {
                                 "type": "message",
                                 "role": "user",

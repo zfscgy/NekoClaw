@@ -709,13 +709,46 @@ class AgentLoop:
         _effective_on_think = _bus_stream_think if _is_streaming else None
         _effective_on_tool_call_delta = _bus_stream_tool_delta if _is_streaming else None
 
+        # For streaming sessions, capture per-round thinking so it can be stored
+        # as _ui_only session entries (visible to the UI, invisible to the LLM).
+        # The blocking path embeds thinking in response.reasoning_content instead.
+        _thinking_rounds: list[str] = []
+        if _is_streaming:
+            _cur_think: list[str] = []
+            _thinking_active = [False]
+
+            _base_on_think = _effective_on_think
+            async def _capturing_on_think(token: str) -> None:
+                _thinking_active[0] = True
+                _cur_think.append(token)
+                if _base_on_think:
+                    await _base_on_think(token)
+            _effective_on_think = _capturing_on_think
+
+            _base_on_progress = on_progress or _bus_progress
+            async def _capturing_on_progress(content: str, *, tool_hint: bool = False) -> None:
+                # A tool-hint marks the end of one LLM round: flush the thinking
+                # that was generated during that round.
+                if tool_hint and _thinking_active[0]:
+                    _thinking_rounds.append("".join(_cur_think).strip())
+                    _cur_think.clear()
+                    _thinking_active[0] = False
+                await _base_on_progress(content, tool_hint=tool_hint)
+            _effective_on_progress = _capturing_on_progress
+        else:
+            _effective_on_progress = on_progress or _bus_progress
+
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages,
-            on_progress=on_progress or _bus_progress,
+            on_progress=_effective_on_progress,
             on_token=_effective_on_token,
             on_think=_effective_on_think,
             on_tool_call_delta=_effective_on_tool_call_delta,
         )
+
+        # Flush any remaining thinking from the final round (no tool_hint fired).
+        if _is_streaming and _cur_think:
+            _thinking_rounds.append("".join(_cur_think).strip())
 
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
@@ -727,7 +760,8 @@ class AgentLoop:
             all_msgs = list(all_msgs)
             all_msgs.append({"role": "assistant", "content": final_content})
 
-        self._save_turn(session, all_msgs, 1 + len(history))
+        self._save_turn(session, all_msgs, 1 + len(history),
+                        thinking_rounds=_thinking_rounds or None)
         self.sessions.save(session)
 
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
@@ -742,9 +776,22 @@ class AgentLoop:
             metadata=meta,
         )
 
-    def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
-        """Save new-turn messages into session, truncating large tool results."""
+    def _save_turn(
+        self,
+        session: Session,
+        messages: list[dict],
+        skip: int,
+        thinking_rounds: list[str] | None = None,
+    ) -> None:
+        """Save new-turn messages into session, truncating large tool results.
+
+        thinking_rounds is an ordered list of thinking-text blocks, one per LLM
+        call round.  Each block is inserted into the session as a ``_ui_only``
+        entry immediately before the corresponding assistant message so the UI
+        can replay it without ever sending it back to the LLM.
+        """
         from datetime import datetime
+        thinking_iter = iter(thinking_rounds or [])
         for m in messages[skip:]:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
@@ -773,6 +820,19 @@ class AgentLoop:
                     if not filtered:
                         continue
                     entry["content"] = filtered
+            # Insert the thinking block that preceded this assistant message.
+            # Only done for the streaming path (thinking_rounds populated by
+            # _process_message); the blocking path stores thinking via
+            # reasoning_content / thinking_blocks on the entry itself.
+            if role == "assistant" and thinking_rounds is not None:
+                think = next(thinking_iter, None)
+                if think:
+                    session.messages.append({
+                        "role": "assistant",
+                        "content": think,
+                        "_ui_only": True,
+                        "timestamp": datetime.now().isoformat(),
+                    })
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
         session.updated_at = datetime.now()
