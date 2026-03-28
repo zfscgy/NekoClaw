@@ -12,16 +12,8 @@ import litellm
 from litellm import acompletion
 from loguru import logger
 
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.providers.base import LLMProvider, StreamDelta, ToolCallRequest, build_stream_deltas
 from nanobot.providers.registry import find_by_model, find_gateway
-
-# Prefix used to embed tool-call JSON in the chat_stream yield sequence so
-# that callers can handle tool calls from the stream without a second request.
-_TOOL_CALL_PREFIX = "\x00tool_call\x00"
-
-# Prefix for incremental tool-call argument deltas streamed before a tool call
-# is complete — callers can use these for live UI updates.
-_TOOL_CALL_DELTA_PREFIX = "\x00tool_call_delta\x00"
 
 # Kept for import compatibility; no longer raised by chat_stream.
 class _ToolCallsDetected(Exception):
@@ -228,7 +220,7 @@ class LiteLLMProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
-    ) -> LLMResponse:
+    ) -> list[StreamDelta]:
         """
         Send a chat completion request via LiteLLM.
 
@@ -240,7 +232,7 @@ class LiteLLMProvider(LLMProvider):
             temperature: Sampling temperature.
 
         Returns:
-            LLMResponse with content and/or tool calls.
+            Complete response as a list of ``StreamDelta`` objects.
         """
         original_model = model or self.default_model
         model = self._resolve_model(original_model)
@@ -287,18 +279,13 @@ class LiteLLMProvider(LLMProvider):
             response = await acompletion(**kwargs)
             return self._parse_response(response)
         except Exception as e:
-            # Return error as content for graceful handling
-            return LLMResponse(
-                content=f"Error calling LLM: {str(e)}",
-                finish_reason="error",
-            )
+            return [StreamDelta(type="content", content=f"Error calling LLM: {str(e)}")]
 
-    def _parse_response(self, response: Any) -> LLMResponse:
-        """Parse LiteLLM response into our standard format."""
+    def _parse_response(self, response: Any) -> list[StreamDelta]:
+        """Parse LiteLLM response into complete stream-style deltas."""
         choice = response.choices[0]
         message = choice.message
         content = message.content
-        finish_reason = choice.finish_reason
 
         # Some providers (e.g. GitHub Copilot) split content and tool_calls
         # across multiple choices. Merge them so tool_calls are not lost.
@@ -307,8 +294,6 @@ class LiteLLMProvider(LLMProvider):
             msg = ch.message
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 raw_tool_calls.extend(msg.tool_calls)
-                if ch.finish_reason in ("tool_calls", "stop"):
-                    finish_reason = ch.finish_reason
             if not content and msg.content:
                 content = msg.content
 
@@ -329,22 +314,12 @@ class LiteLLMProvider(LLMProvider):
                 arguments=args,
             ))
 
-        usage = {}
-        if hasattr(response, "usage") and response.usage:
-            usage = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-            }
-
         reasoning_content = getattr(message, "reasoning_content", None) or None
         thinking_blocks = getattr(message, "thinking_blocks", None) or None
 
-        return LLMResponse(
+        return build_stream_deltas(
             content=content,
             tool_calls=tool_calls,
-            finish_reason=finish_reason or "stop",
-            usage=usage,
             reasoning_content=reasoning_content,
             thinking_blocks=thinking_blocks,
         )
@@ -357,19 +332,13 @@ class LiteLLMProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
-    ) -> AsyncIterator[str]:
-        """Stream final-response tokens via LiteLLM streaming.
+    ) -> AsyncIterator[StreamDelta]:
+        """Stream structured response deltas via LiteLLM streaming.
 
         Only streams the final (non-tool-call) assistant turn.  If the first
         response contains tool calls we fall back to the regular non-streaming
-        ``chat()`` path so the tool loop still works correctly.  Yields text
-        delta strings as they arrive from the provider.
-
-        Thinking/reasoning deltas are prefixed with a sentinel so callers can
-        route them to a separate UI surface:
-
-            "\x00think\x00" + thinking_text   — reasoning delta chunk
-            plain string                       — regular content delta
+        ``chat()`` path so the tool loop still works correctly. Yields
+        ``StreamDelta`` objects as they arrive from the provider.
         """
         original_model = model or self.default_model
         resolved_model = self._resolve_model(original_model)
@@ -403,18 +372,9 @@ class LiteLLMProvider(LLMProvider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        # Thinking chunks are prefixed with "\x00think\x00" so callers can
-        # display them in a separate reasoning bubble.
-        # Incremental tool-call argument deltas are yielded as they arrive with
-        # _TOOL_CALL_DELTA_PREFIX so callers can show live build-up in the UI.
-        # Each *complete* tool call is yielded individually with _TOOL_CALL_PREFIX
-        # as soon as it is finished (when the next index appears or at end of
-        # stream) so callers can execute it without waiting for the full batch.
-        _THINK_PREFIX = "\x00think\x00"
-
         # index → {"id": str, "name": str, "arguments": str}
         accumulated_tool_calls: dict[int, dict[str, str]] = {}
-        # Indices whose complete tool-call chunk has already been W.
+        # Indices whose complete tool-call chunk has already been yielded.
         finalized_indices: set[int] = set()
 
         try:
@@ -434,7 +394,10 @@ class LiteLLMProvider(LLMProvider):
                         # When a higher index appears all lower indices are complete.
                         for prev_idx in sorted(accumulated_tool_calls.keys()):
                             if prev_idx < idx and prev_idx not in finalized_indices:
-                                yield _TOOL_CALL_PREFIX + json.dumps([accumulated_tool_calls[prev_idx]])
+                                yield StreamDelta(
+                                    type="tool_call",
+                                    content=json.dumps(accumulated_tool_calls[prev_idx]),
+                                )
                                 finalized_indices.add(prev_idx)
 
                         if idx not in accumulated_tool_calls:
@@ -452,12 +415,16 @@ class LiteLLMProvider(LLMProvider):
 
                         # Stream a delta so callers can show live argument build-up.
                         if tc["name"] or tc["arguments"]:
-                            yield _TOOL_CALL_DELTA_PREFIX + json.dumps({
-                                "index": idx,
-                                "id": tc["id"],
-                                "name": tc["name"],
-                                "arguments": tc["arguments"],
-                            })
+                            yield StreamDelta(
+                                type="tool_call",
+                                content=json.dumps({
+                                    "index": idx,
+                                    "id": tc["id"],
+                                    "name": tc["name"],
+                                    "arguments": tc["arguments"],
+                                    "partial": True,
+                                }),
+                            )
 
                 # Anthropic extended thinking / DeepSeek reasoning deltas
                 thinking_text = (
@@ -465,16 +432,19 @@ class LiteLLMProvider(LLMProvider):
                     or getattr(delta, "thinking", None)
                 )
                 if thinking_text:
-                    yield _THINK_PREFIX + thinking_text
+                    yield StreamDelta(type="thinking", content=thinking_text)
 
                 text = getattr(delta, "content", None)
                 if text:
-                    yield text
+                    yield StreamDelta(type="content", content=text)
 
             # Finalize any tool calls not yet yielded (the last index or sole call).
             for idx in sorted(accumulated_tool_calls.keys()):
                 if idx not in finalized_indices:
-                    yield _TOOL_CALL_PREFIX + json.dumps([accumulated_tool_calls[idx]])
+                    yield StreamDelta(
+                        type="tool_call",
+                        content=json.dumps(accumulated_tool_calls[idx]),
+                    )
 
         except Exception as e:
             logger.warning("Streaming failed, no tokens yielded: {}", e)

@@ -140,6 +140,18 @@ class TestSessionImmutableHistory:
             session.get_history(max_messages=3)
         assert len(session.messages) == original_len
 
+    def test_get_history_truncates_tool_results_without_mutating_session(self) -> None:
+        """Test that long tool payloads are truncated only in the history copy."""
+        session = Session(key="test:tool-history")
+        session.add_message("user", "run the tool")
+        long_result = "x" * 600
+        session.add_message("tool", long_result, tool_call_id="call_123", name="read_file")
+
+        history = session.get_history(max_messages=10)
+
+        assert history[1]["content"] == ("x" * 500) + "\n... (truncated)"
+        assert session.messages[1]["content"] == long_result
+
 
 class TestSessionPersistence:
     """Test Session persistence and reload."""
@@ -168,6 +180,17 @@ class TestSessionPersistence:
         assert len(history) == 10
         assert history[0]["content"] == "msg20"
         assert history[-1]["content"] == "msg29"
+
+    def test_tool_results_persist_full_content(self, temp_manager):
+        """Test that session files keep full tool payloads on disk."""
+        session1 = Session(key="test:tool-persist")
+        long_result = "x" * 600
+        session1.add_message("user", "run the tool")
+        session1.add_message("tool", long_result, tool_call_id="call_123", name="read_file")
+        temp_manager.save(session1)
+
+        session2 = temp_manager.get_or_create("test:tool-persist")
+        assert session2.messages[1]["content"] == long_result
 
     def test_clear_resets_session(self, temp_manager):
         """Test that clear() properly resets session."""
@@ -489,7 +512,7 @@ class TestConsolidationDeduplicationGuard:
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
-        from nanobot.providers.base import LLMResponse
+        from nanobot.providers.base import StreamDelta
 
         bus = MessageBus()
         provider = MagicMock()
@@ -498,7 +521,7 @@ class TestConsolidationDeduplicationGuard:
             bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
         )
 
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.provider.chat = AsyncMock(return_value=[StreamDelta(type="content", content="ok")])
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
@@ -533,7 +556,7 @@ class TestConsolidationDeduplicationGuard:
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
-        from nanobot.providers.base import LLMResponse
+        from nanobot.providers.base import StreamDelta
 
         bus = MessageBus()
         provider = MagicMock()
@@ -542,7 +565,7 @@ class TestConsolidationDeduplicationGuard:
             bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
         )
 
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.provider.chat = AsyncMock(return_value=[StreamDelta(type="content", content="ok")])
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
@@ -585,7 +608,7 @@ class TestConsolidationDeduplicationGuard:
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
-        from nanobot.providers.base import LLMResponse
+        from nanobot.providers.base import StreamDelta
 
         bus = MessageBus()
         provider = MagicMock()
@@ -594,7 +617,7 @@ class TestConsolidationDeduplicationGuard:
             bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
         )
 
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.provider.chat = AsyncMock(return_value=[StreamDelta(type="content", content="ok")])
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
@@ -630,7 +653,7 @@ class TestConsolidationDeduplicationGuard:
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
-        from nanobot.providers.base import LLMResponse
+        from nanobot.providers.base import StreamDelta
 
         bus = MessageBus()
         provider = MagicMock()
@@ -639,7 +662,7 @@ class TestConsolidationDeduplicationGuard:
             bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
         )
 
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.provider.chat = AsyncMock(return_value=[StreamDelta(type="content", content="ok")])
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
@@ -688,7 +711,7 @@ class TestConsolidationDeduplicationGuard:
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
-        from nanobot.providers.base import LLMResponse
+        from nanobot.providers.base import StreamDelta
 
         bus = MessageBus()
         provider = MagicMock()
@@ -697,7 +720,7 @@ class TestConsolidationDeduplicationGuard:
             bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
         )
 
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.provider.chat = AsyncMock(return_value=[StreamDelta(type="content", content="ok")])
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
@@ -732,7 +755,7 @@ class TestConsolidationDeduplicationGuard:
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
-        from nanobot.providers.base import LLMResponse
+        from nanobot.providers.base import StreamDelta
 
         bus = MessageBus()
         provider = MagicMock()
@@ -741,7 +764,7 @@ class TestConsolidationDeduplicationGuard:
             bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
         )
 
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.provider.chat = AsyncMock(return_value=[StreamDelta(type="content", content="ok")])
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")
@@ -791,7 +814,7 @@ class TestConsolidationDeduplicationGuard:
         from nanobot.agent.loop import AgentLoop
         from nanobot.bus.events import InboundMessage
         from nanobot.bus.queue import MessageBus
-        from nanobot.providers.base import LLMResponse
+        from nanobot.providers.base import StreamDelta
 
         bus = MessageBus()
         provider = MagicMock()
@@ -799,7 +822,7 @@ class TestConsolidationDeduplicationGuard:
         loop = AgentLoop(
             bus=bus, provider=provider, workspace=tmp_path, model="test-model", memory_window=10
         )
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="ok", tool_calls=[]))
+        loop.provider.chat = AsyncMock(return_value=[StreamDelta(type="content", content="ok")])
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         session = loop.sessions.get_or_create("cli:test")

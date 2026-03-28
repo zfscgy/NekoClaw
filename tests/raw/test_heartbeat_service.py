@@ -3,17 +3,17 @@ import asyncio
 import pytest
 
 from nanobot.heartbeat.service import HeartbeatService
-from nanobot.providers.base import LLMResponse, ToolCallRequest
+from nanobot.providers.base import StreamDelta, ToolCallRequest, build_stream_deltas
 
 
 class DummyProvider:
-    def __init__(self, responses: list[LLMResponse]):
+    def __init__(self, responses: list[list[StreamDelta]]):
         self._responses = list(responses)
 
-    async def chat(self, *args, **kwargs) -> LLMResponse:
+    async def chat(self, *args, **kwargs) -> list[StreamDelta]:
         if self._responses:
             return self._responses.pop(0)
-        return LLMResponse(content="", tool_calls=[])
+        return []
 
 
 @pytest.mark.asyncio
@@ -40,7 +40,7 @@ async def test_start_is_idempotent(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_decide_returns_skip_when_no_tool_call(tmp_path) -> None:
-    provider = DummyProvider([LLMResponse(content="no tool call", tool_calls=[])])
+    provider = DummyProvider([[StreamDelta(type="content", content="no tool call")]])
     service = HeartbeatService(
         workspace=tmp_path,
         provider=provider,
@@ -57,7 +57,7 @@ async def test_trigger_now_executes_when_decision_is_run(tmp_path) -> None:
     (tmp_path / "HEARTBEAT.md").write_text("- [ ] do thing", encoding="utf-8")
 
     provider = DummyProvider([
-        LLMResponse(
+        build_stream_deltas(
             content="",
             tool_calls=[
                 ToolCallRequest(
@@ -92,7 +92,7 @@ async def test_trigger_now_returns_none_when_decision_is_skip(tmp_path) -> None:
     (tmp_path / "HEARTBEAT.md").write_text("- [ ] do thing", encoding="utf-8")
 
     provider = DummyProvider([
-        LLMResponse(
+        build_stream_deltas(
             content="",
             tool_calls=[
                 ToolCallRequest(

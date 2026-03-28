@@ -1,6 +1,7 @@
 """CLI commands for nanobot."""
 
 import asyncio
+import json
 import os
 import select
 import signal
@@ -414,7 +415,7 @@ def gateway(
             session_key="heartbeat",
             channel=channel,
             chat_id=chat_id,
-            on_progress=_silent,
+            on_delta=_silent,
         )
 
     async def on_heartbeat_notify(response: str) -> None:
@@ -490,6 +491,7 @@ def agent(
     from nanobot.bus.queue import MessageBus
     from nanobot.config.paths import get_cron_dir
     from nanobot.cron.service import CronService
+    from nanobot.providers.base import StreamDelta
 
     config = _load_runtime_config(config, workspace)
     sync_workspace_templates(config.workspace_path)
@@ -532,19 +534,35 @@ def agent(
         # Animated spinner is safe to use with prompt_toolkit input handling
         return console.status("[dim]nanobot is thinking...[/dim]", spinner="dots")
 
-    async def _cli_progress(content: str, *, tool_hint: bool = False) -> None:
+    async def _cli_delta(delta: StreamDelta) -> None:
         ch = agent_loop.channels_config
-        if ch and tool_hint and not ch.send_tool_hints:
+        if delta.type == "content":
             return
-        if ch and not tool_hint and not ch.send_progress:
+        if delta.type == "thinking":
+            if ch and not ch.send_progress:
+                return
+            console.print(f"  [dim]↳ {delta.content}[/dim]")
             return
-        console.print(f"  [dim]↳ {content}[/dim]")
+        try:
+            payload = json.loads(delta.content)
+        except Exception:
+            return
+        items = payload if isinstance(payload, list) else [payload]
+        for item in items:
+            if not isinstance(item, dict) or item.get("partial"):
+                continue
+            tc = agent_loop._tool_call_from_payload(item)
+            if tc is None:
+                continue
+            if ch and not ch.send_tool_hints:
+                return
+            console.print(f"  [dim]↳ {agent_loop._format_tool_call(tc)}[/dim]")
 
     if message:
         # Single message mode — direct call, no bus needed
         async def run_once():
             with _thinking_ctx():
-                response = await agent_loop.process_direct(message, session_id, on_progress=_cli_progress)
+                response = await agent_loop.process_direct(message, session_id, on_delta=_cli_delta)
             _print_agent_response(response, render_markdown=markdown)
             await agent_loop.close_mcp()
 

@@ -30,7 +30,7 @@ def _load_real_provider():
 
 @pytest.mark.asyncio
 async def test_streaming_tokens_printed():
-    """chat_stream() yields text tokens and prints each one."""
+    """chat_stream() yields content deltas and prints each one."""
     provider, model, _ = _load_real_provider()
 
     messages = [{"role": "user", "content": "Say hello in exactly five words."}]
@@ -41,7 +41,8 @@ async def test_streaming_tokens_printed():
 
     async for chunk in provider.chat_stream(messages=messages, model=model):
         print(repr(chunk), flush=True)
-        chunks.append(chunk)
+        if chunk.type == "content":
+            chunks.append(chunk.content)
 
     full_text = "".join(chunks)
     print(f"[streaming] --- full response ---\n{full_text}")
@@ -97,13 +98,11 @@ async def test_raw_delta_fields():
 
 @pytest.mark.asyncio
 async def test_streaming_think_and_response_printed():
-    """chat_stream() emits think-prefixed chunks for reasoning models and text chunks for the reply.
+    """chat_stream() emits thinking and content deltas for reasoning models.
 
     The test prints every segment so you can observe the live token-by-token output.
     Non-reasoning models will produce zero think chunks (which is fine).
     """
-    _THINK_PREFIX = "\x00think\x00"
-
     provider, model, reasoning_effort = _load_real_provider()
 
     messages = [
@@ -128,10 +127,10 @@ async def test_streaming_think_and_response_printed():
         reasoning_effort=reasoning_effort,
     ):
         print(repr(chunk), flush=True)
-        if chunk.startswith(_THINK_PREFIX):
-            think_chunks.append(chunk[len(_THINK_PREFIX):])
-        else:
-            response_chunks.append(chunk)
+        if chunk.type == "thinking":
+            think_chunks.append(chunk.content)
+        elif chunk.type == "content":
+            response_chunks.append(chunk.content)
 
     full_think = "".join(think_chunks)
     full_response = "".join(response_chunks)
@@ -150,10 +149,10 @@ async def test_streaming_think_and_response_printed():
 
 @pytest.mark.asyncio
 async def test_streaming_via_agent_loop():
-    """_run_agent_loop() calls on_token and on_think for each streaming chunk.
+    """_run_agent_loop() calls on_delta for each streamed chunk.
 
     This exercises the full pipeline: AgentLoop → provider.chat_stream()
-    → on_token / on_think callbacks, printing every segment.
+    → on_delta callback, printing every segment.
     """
     from pathlib import Path
     from unittest.mock import patch
@@ -180,21 +179,19 @@ async def test_streaming_via_agent_loop():
     token_chunks: list[str] = []
     think_chunks: list[str] = []
 
-    async def on_token(chunk: str) -> None:
-        print(f"[token] {repr(chunk)}", flush=True)
-        token_chunks.append(chunk)
-
-    async def on_think(chunk: str) -> None:
-        print(f"[think] {repr(chunk)}", flush=True)
-        think_chunks.append(chunk)
+    async def on_delta(delta) -> None:
+        print(f"[delta] {repr(delta)}", flush=True)
+        if delta.type == "content":
+            token_chunks.append(delta.content)
+        elif delta.type == "thinking":
+            think_chunks.append(delta.content)
 
     messages = [{"role": "user", "content": "Count from 1 to 5, one number per line."}]
 
     print(f"\n[agent_loop] model={model}  reasoning_effort={reasoning_effort}")
     final_content, tools_used, _ = await loop._run_agent_loop(
         initial_messages=messages,
-        on_token=on_token,
-        on_think=on_think,
+        on_delta=on_delta,
     )
 
     full_tokens = "".join(token_chunks)

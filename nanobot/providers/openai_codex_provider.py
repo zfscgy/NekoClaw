@@ -11,7 +11,7 @@ import httpx
 from loguru import logger
 from oauth_cli_kit import get_token as get_codex_token
 
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.providers.base import LLMProvider, StreamDelta, ToolCallRequest, build_stream_deltas
 
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_ORIGINATOR = "nanobot"
@@ -32,7 +32,7 @@ class OpenAICodexProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
-    ) -> LLMResponse:
+    ) -> list[StreamDelta]:
         model = model or self.default_model
         system_prompt, input_items = _convert_messages(messages)
 
@@ -62,22 +62,18 @@ class OpenAICodexProvider(LLMProvider):
 
         try:
             try:
-                content, tool_calls, finish_reason = await _request_codex(url, headers, body, verify=True)
+                content, tool_calls, _finish_reason = await _request_codex(url, headers, body, verify=True)
             except Exception as e:
                 if "CERTIFICATE_VERIFY_FAILED" not in str(e):
                     raise
                 logger.warning("SSL certificate verification failed for Codex API; retrying with verify=False")
-                content, tool_calls, finish_reason = await _request_codex(url, headers, body, verify=False)
-            return LLMResponse(
+                content, tool_calls, _finish_reason = await _request_codex(url, headers, body, verify=False)
+            return build_stream_deltas(
                 content=content,
                 tool_calls=tool_calls,
-                finish_reason=finish_reason,
             )
         except Exception as e:
-            return LLMResponse(
-                content=f"Error calling Codex: {str(e)}",
-                finish_reason="error",
-            )
+            return [StreamDelta(type="content", content=f"Error calling Codex: {str(e)}")]
 
     def get_default_model(self) -> str:
         return self.default_model

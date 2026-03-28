@@ -8,7 +8,7 @@ from typing import Any
 import json_repair
 from openai import AsyncOpenAI
 
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.providers.base import LLMProvider, StreamDelta, ToolCallRequest, build_stream_deltas
 
 
 class CustomProvider(LLMProvider):
@@ -25,7 +25,7 @@ class CustomProvider(LLMProvider):
 
     async def chat(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
                    model: str | None = None, max_tokens: int = 4096, temperature: float = 0.7,
-                   reasoning_effort: str | None = None) -> LLMResponse:
+                   reasoning_effort: str | None = None) -> list[StreamDelta]:
         kwargs: dict[str, Any] = {
             "model": model or self.default_model,
             "messages": self._sanitize_empty_content(messages),
@@ -39,9 +39,9 @@ class CustomProvider(LLMProvider):
         try:
             return self._parse(await self._client.chat.completions.create(**kwargs))
         except Exception as e:
-            return LLMResponse(content=f"Error: {e}", finish_reason="error")
+            return [StreamDelta(type="content", content=f"Error: {e}")]
 
-    def _parse(self, response: Any) -> LLMResponse:
+    def _parse(self, response: Any) -> list[StreamDelta]:
         choice = response.choices[0]
         msg = choice.message
         tool_calls = [
@@ -49,10 +49,9 @@ class CustomProvider(LLMProvider):
                             arguments=json_repair.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments)
             for tc in (msg.tool_calls or [])
         ]
-        u = response.usage
-        return LLMResponse(
-            content=msg.content, tool_calls=tool_calls, finish_reason=choice.finish_reason or "stop",
-            usage={"prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens, "total_tokens": u.total_tokens} if u else {},
+        return build_stream_deltas(
+            content=msg.content,
+            tool_calls=tool_calls,
             reasoning_content=getattr(msg, "reasoning_content", None) or None,
         )
 

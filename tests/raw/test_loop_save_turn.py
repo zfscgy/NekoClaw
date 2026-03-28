@@ -4,9 +4,7 @@ from nanobot.session.manager import Session
 
 
 def _mk_loop() -> AgentLoop:
-    loop = AgentLoop.__new__(AgentLoop)
-    loop._TOOL_RESULT_MAX_CHARS = 500
-    return loop
+    return AgentLoop.__new__(AgentLoop)
 
 
 def test_save_turn_skips_multimodal_user_when_only_runtime_context() -> None:
@@ -39,3 +37,22 @@ def test_save_turn_keeps_image_placeholder_after_runtime_strip() -> None:
         skip=0,
     )
     assert session.messages[0]["content"] == [{"type": "text", "text": "[image]"}]
+
+
+def test_save_turn_keeps_full_tool_result_in_session() -> None:
+    loop = _mk_loop()
+    session = Session(key="test:tool")
+    full_result = "x" * 600
+
+    loop._save_turn(
+        session,
+        [{
+            "role": "tool",
+            "tool_call_id": "call_123",
+            "name": "read_file",
+            "content": full_result,
+        }],
+        skip=0,
+    )
+
+    assert session.messages[0]["content"] == full_result

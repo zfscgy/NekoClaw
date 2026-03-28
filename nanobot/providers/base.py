@@ -1,8 +1,11 @@
 """Base LLM provider interface."""
 
+import json
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Literal
+
+import json_repair
 
 
 @dataclass
@@ -11,22 +14,6 @@ class ToolCallRequest:
     id: str
     name: str
     arguments: dict[str, Any]
-
-
-@dataclass
-class LLMResponse:
-    """Response from an LLM provider."""
-    content: str | None
-    tool_calls: list[ToolCallRequest] = field(default_factory=list)
-    finish_reason: str = "stop"
-    usage: dict[str, int] = field(default_factory=dict)
-    reasoning_content: str | None = None  # Kimi, DeepSeek-R1 etc.
-    thinking_blocks: list[dict] | None = None  # Anthropic extended thinking
-    
-    @property
-    def has_tool_calls(self) -> bool:
-        """Check if response contains tool calls."""
-        return len(self.tool_calls) > 0
 
 
 class LLMProvider(ABC):
@@ -110,7 +97,7 @@ class LLMProvider(ABC):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
-    ) -> LLMResponse:
+    ) -> list["StreamDelta"]:
         """
         Send a chat completion request.
         
@@ -122,7 +109,7 @@ class LLMProvider(ABC):
             temperature: Sampling temperature.
         
         Returns:
-            LLMResponse with content and/or tool calls.
+            Complete response as a list of ``StreamDelta`` objects.
         """
         pass
 
@@ -134,15 +121,15 @@ class LLMProvider(ABC):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
-    ) -> AsyncIterator[str]:
-        """Stream chat completion tokens as they arrive.
+    ) -> AsyncIterator["StreamDelta"]:
+        """Stream chat completion deltas as they arrive.
 
-        Yields text delta strings one chunk at a time.  The default
+        Yields ``StreamDelta`` objects one chunk at a time. The default
         implementation falls back to a single ``chat()`` call so providers
         that do not override this still work — they just won't stream.
         Providers that support native streaming should override this method.
         """
-        response = await self.chat(
+        deltas = await self.chat(
             messages=messages,
             tools=tools,
             model=model,
@@ -150,11 +137,156 @@ class LLMProvider(ABC):
             temperature=temperature,
             reasoning_effort=reasoning_effort,
         )
-        if response.content:
-            yield response.content
+        for delta in deltas:
+            yield delta
         return
 
     @abstractmethod
     def get_default_model(self) -> str:
         """Get the default model for this provider."""
         pass
+
+
+@dataclass
+class StreamDelta:
+    """A delta from the LLM stream."""
+    type: Literal["tool_call", "thinking", "content"]
+    content: str  # tool_call: json string for one call, thinking: text, content: text
+
+
+def normalize_thinking_text(value: Any) -> str | None:
+    """Flatten provider-specific thinking payloads into displayable text."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        clean = value.strip()
+        return clean or None
+    if isinstance(value, list):
+        parts: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            extracted = normalize_thinking_text(item)
+            if extracted and extracted not in seen:
+                seen.add(extracted)
+                parts.append(extracted)
+        merged = "\n".join(parts).strip()
+        return merged or None
+    if isinstance(value, dict):
+        parts: list[str] = []
+        seen: set[str] = set()
+        for key in ("thinking", "reasoning_content", "text", "content", "value", "thought"):
+            extracted = normalize_thinking_text(value.get(key))
+            if extracted and extracted not in seen:
+                seen.add(extracted)
+                parts.append(extracted)
+        merged = "\n".join(parts).strip()
+        return merged or None
+    return None
+
+
+def build_stream_deltas(
+    *,
+    content: str | None,
+    tool_calls: list[ToolCallRequest] | None = None,
+    reasoning_content: str | None = None,
+    thinking_blocks: list[dict[str, Any]] | None = None,
+) -> list[StreamDelta]:
+    """Build complete deltas for a blocking chat response."""
+    deltas: list[StreamDelta] = []
+
+    thinking_parts: list[str] = []
+    seen: set[str] = set()
+    for source in (reasoning_content, thinking_blocks):
+        extracted = normalize_thinking_text(source)
+        if extracted and extracted not in seen:
+            seen.add(extracted)
+            thinking_parts.append(extracted)
+    if thinking_parts:
+        deltas.append(StreamDelta(type="thinking", content="\n".join(thinking_parts)))
+
+    for tc in tool_calls or []:
+        raw_arguments = tc.arguments
+        if isinstance(raw_arguments, str):
+            arguments = raw_arguments
+        else:
+            arguments = json.dumps(raw_arguments, ensure_ascii=False)
+        deltas.append(
+            StreamDelta(
+                type="tool_call",
+                content=json.dumps(
+                    {
+                        "id": tc.id,
+                        "name": tc.name,
+                        "arguments": arguments,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+
+    if content:
+        deltas.append(StreamDelta(type="content", content=content))
+
+    return deltas
+
+
+def parse_stream_deltas(
+    deltas: list[StreamDelta],
+) -> tuple[str | None, list[ToolCallRequest], str | None]:
+    """Extract complete content, tool calls, and thinking from deltas."""
+    content_parts: list[str] = []
+    thinking_parts: list[str] = []
+    tool_calls: list[ToolCallRequest] = []
+
+    for delta in deltas:
+        if delta.type == "content":
+            content_parts.append(delta.content)
+            continue
+        if delta.type == "thinking":
+            if delta.content:
+                thinking_parts.append(delta.content)
+            continue
+        if delta.type != "tool_call":
+            continue
+
+        try:
+            payload = json.loads(delta.content)
+        except Exception:
+            continue
+
+        items = payload if isinstance(payload, list) else [payload]
+        for item in items:
+            if not isinstance(item, dict) or item.get("partial"):
+                continue
+            args = item.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json_repair.loads(args)
+                except Exception:
+                    args = {}
+            tool_calls.append(
+                ToolCallRequest(
+                    id=str(item.get("id", "")),
+                    name=str(item.get("name", "")),
+                    arguments=args,
+                )
+            )
+
+    content = "".join(content_parts) if content_parts else None
+    thinking = "\n".join(part for part in thinking_parts if part).strip() or None
+    return content, tool_calls, thinking
+
+
+def is_error_content(text: str | None) -> bool:
+    """Best-effort detection for provider error strings returned as content."""
+    if not text:
+        return False
+    return text.startswith(
+        (
+            "Error calling ",
+            "Error parsing ",
+            "Azure OpenAI API Error ",
+            "Error: ",
+            "HTTP ",
+        )
+    )

@@ -9,7 +9,7 @@ from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tools.message import MessageTool
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.providers.base import LLMResponse, ToolCallRequest
+from nanobot.providers.base import StreamDelta, ToolCallRequest, build_stream_deltas
 
 
 def _make_loop(tmp_path: Path) -> AgentLoop:
@@ -30,8 +30,8 @@ class TestMessageToolSuppressLogic:
             arguments={"content": "Hello", "channel": "feishu", "chat_id": "chat123"},
         )
         calls = iter([
-            LLMResponse(content="", tool_calls=[tool_call]),
-            LLMResponse(content="Done", tool_calls=[]),
+            build_stream_deltas(content="", tool_calls=[tool_call]),
+            [StreamDelta(type="content", content="Done")],
         ])
         loop.provider.chat = AsyncMock(side_effect=lambda *a, **kw: next(calls))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -55,8 +55,8 @@ class TestMessageToolSuppressLogic:
             arguments={"content": "Email content", "channel": "email", "chat_id": "user@example.com"},
         )
         calls = iter([
-            LLMResponse(content="", tool_calls=[tool_call]),
-            LLMResponse(content="I've sent the email.", tool_calls=[]),
+            build_stream_deltas(content="", tool_calls=[tool_call]),
+            [StreamDelta(type="content", content="I've sent the email.")],
         ])
         loop.provider.chat = AsyncMock(side_effect=lambda *a, **kw: next(calls))
         loop.tools.get_definitions = MagicMock(return_value=[])
@@ -77,7 +77,7 @@ class TestMessageToolSuppressLogic:
     @pytest.mark.asyncio
     async def test_not_suppress_when_no_message_tool_used(self, tmp_path: Path) -> None:
         loop = _make_loop(tmp_path)
-        loop.provider.chat = AsyncMock(return_value=LLMResponse(content="Hello!", tool_calls=[]))
+        loop.provider.chat = AsyncMock(return_value=[StreamDelta(type="content", content="Hello!")])
         loop.tools.get_definitions = MagicMock(return_value=[])
 
         msg = InboundMessage(channel="feishu", sender_id="user1", chat_id="chat123", content="Hi")
@@ -90,30 +90,76 @@ class TestMessageToolSuppressLogic:
         loop = _make_loop(tmp_path)
         tool_call = ToolCallRequest(id="call1", name="read_file", arguments={"path": "foo.txt"})
         calls = iter([
-            LLMResponse(
+            build_stream_deltas(
                 content="Visible<think>hidden</think>",
                 tool_calls=[tool_call],
                 reasoning_content="secret reasoning",
                 thinking_blocks=[{"signature": "sig", "thought": "secret thought"}],
             ),
-            LLMResponse(content="Done", tool_calls=[]),
+            [StreamDelta(type="content", content="Done")],
         ])
         loop.provider.chat = AsyncMock(side_effect=lambda *a, **kw: next(calls))
         loop.tools.get_definitions = MagicMock(return_value=[])
         loop.tools.execute = AsyncMock(return_value="ok")
 
-        progress: list[tuple[str, bool]] = []
+        deltas: list[StreamDelta] = []
 
-        async def on_progress(content: str, *, tool_hint: bool = False) -> None:
-            progress.append((content, tool_hint))
+        async def on_delta(delta: StreamDelta) -> None:
+            deltas.append(delta)
 
-        final_content, _, _ = await loop._run_agent_loop([], on_progress=on_progress)
+        final_content, _, _ = await loop._run_agent_loop([], on_delta=on_delta)
 
         assert final_content == "Done"
-        assert progress == [
-            ("Visible", False),
-            ('read_file("foo.txt")', True),
-        ]
+        assert [delta.type for delta in deltas] == ["thinking", "tool_call", "content", "content"]
+        assert deltas[0].content == "secret reasoning\nsecret thought"
+        assert deltas[2].content == "Visible<think>hidden</think>"
+        assert deltas[3].content == "Done"
+
+    @pytest.mark.asyncio
+    async def test_streaming_accumulates_partial_tool_call_json_until_complete(self, tmp_path: Path) -> None:
+        loop = _make_loop(tmp_path)
+        loop.tools.get_definitions = MagicMock(return_value=[])
+        loop.tools.execute = AsyncMock(return_value="file contents")
+
+        async def first_stream():
+            yield StreamDelta(type="tool_call", content='{"id":"call1","name":"read_file","arguments":"{')
+            yield StreamDelta(type="tool_call", content='\\"path\\":\\"foo.txt\\"}"}')
+
+        async def empty_stream():
+            if False:
+                yield
+
+        stream_calls = iter([first_stream(), empty_stream()])
+        loop.provider.chat_stream = MagicMock(side_effect=lambda *a, **kw: next(stream_calls))
+        loop.provider.chat = AsyncMock(return_value=[StreamDelta(type="content", content="Done")])
+
+        deltas: list[StreamDelta] = []
+
+        async def on_delta(delta: StreamDelta) -> None:
+            deltas.append(delta)
+
+        final_content, _, _ = await loop._run_agent_loop([], on_delta=on_delta)
+
+        assert final_content == "Done"
+        loop.tools.execute.assert_awaited_once_with("read_file", {"path": "foo.txt"})
+        assert [delta.type for delta in deltas] == ["tool_call", "tool_call", "content"]
+
+    @pytest.mark.asyncio
+    async def test_blocking_path_ignores_incomplete_tool_call_delta(self, tmp_path: Path) -> None:
+        loop = _make_loop(tmp_path)
+        loop.tools.get_definitions = MagicMock(return_value=[])
+        loop.tools.execute = AsyncMock(return_value="unused")
+        loop.provider.chat = AsyncMock(
+            return_value=[
+                StreamDelta(type="tool_call", content='{"id":"call1","name":"read_file","arguments":"{'),
+                StreamDelta(type="content", content="Done"),
+            ]
+        )
+
+        final_content, _, _ = await loop._run_agent_loop([])
+
+        assert final_content == "Done"
+        loop.tools.execute.assert_not_called()
 
 
 class TestMessageToolTurnTracking:

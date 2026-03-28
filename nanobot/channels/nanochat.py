@@ -10,6 +10,7 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from loguru import logger
 
@@ -99,7 +100,16 @@ class NanochatChannel(BaseChannel):
         self._stream_segments: dict[str, list[dict]] = {}
         # Per-conversation accumulation of the *current* in-progress LLM round
         # (reset each time a round commits via stream_end + tool_call).
-        # Shape: {"thinking": str, "tool_deltas": {index: {name, arguments}}, "content": str}
+        # Shape:
+        # {
+        #   "pending_user": {"content": str, "media": list[str]},
+        #   "items": [
+        #       {"kind": "thinking", "content": str},
+        #       {"kind": "content", "content": str},
+        #       {"kind": "tool_call", "index": int, "name": str, "arguments": str},
+        #   ],
+        #   "tool_deltas": {index: {name, arguments}},
+        # }
         self._cur_round: dict[str, dict] = {}
         self._app: Any = None
         self._runner: Any = None
@@ -177,11 +187,11 @@ class NanochatChannel(BaseChannel):
         """Translate raw session messages into nanochat UI-format entries.
 
         Mapping:
-          _ui_only entries (streaming thinking)  → type: progress
-          role: user                              → type: message, role: user
+          _ui_only entries (streaming thinking)  → type: think
+          role: user                              → type: content, role: user
           role: assistant + tool_calls            → type: tool_call  (one per call)
-          role: assistant + content               → type: message, role: assistant
-          role: assistant + reasoning_content     → type: progress before the message
+          role: assistant + content               → type: content, role: assistant
+          role: assistant + reasoning_content     → type: think before the content
           role: tool / system                     → skipped
         """
         ui: list[dict[str, Any]] = []
@@ -193,7 +203,7 @@ class NanochatChannel(BaseChannel):
                 content = (m.get("content") or "").strip()
                 if content:
                     ui.append({
-                        "type": "progress",
+                        "type": "think",
                         "role": "assistant",
                         "content": content,
                         "media": [],
@@ -212,7 +222,7 @@ class NanochatChannel(BaseChannel):
                     )
                 if raw:
                     ui.append({
-                        "type": "message",
+                        "type": "content",
                         "role": "user",
                         "content": raw,
                         "media": [],
@@ -221,6 +231,9 @@ class NanochatChannel(BaseChannel):
 
             # ── Assistant messages ───────────────────────────────────────────
             elif role == "assistant":
+                if m.get("_message_ack"):
+                    continue
+
                 # Blocking-path thinking: emit as progress before the message
                 think = (m.get("reasoning_content") or "").strip()
                 if not think:
@@ -238,34 +251,55 @@ class NanochatChannel(BaseChannel):
                         think = "\n".join(parts).strip()
                 if think:
                     ui.append({
-                        "type": "progress",
+                        "type": "think",
                         "role": "assistant",
                         "content": think,
                         "media": [],
                         "conversation_id": cid,
                     })
 
-                tool_calls = m.get("tool_calls") or []
-                if tool_calls:
-                    for tc in tool_calls:
-                        fn = tc.get("function", {})
-                        name = fn.get("name", "tool")
-                        args_str = fn.get("arguments", "")
+                def _append_tool_calls() -> None:
+                    tool_calls = m.get("tool_calls") or []
+                    if tool_calls:
+                        for tc in tool_calls:
+                            fn = tc.get("function", {})
+                            name = fn.get("name", "tool")
+                            args_str = fn.get("arguments", "")
+                            if name == "message":
+                                try:
+                                    args = json.loads(args_str)
+                                    if isinstance(args, dict) and isinstance(args.get("media"), list):
+                                        args = dict(args)
+                                        args["media"] = NanochatChannel._media_to_urls(args["media"])
+                                        args_str = json.dumps(args, ensure_ascii=False)
+                                except Exception:
+                                    pass
+                            ui.append({
+                                "type": "tool_call",
+                                "role": "assistant",
+                                "content": f"{name}({args_str})",
+                                "media": [],
+                                "conversation_id": cid,
+                            })
+
+                def _append_content() -> None:
+                    if m.get("content"):
                         ui.append({
-                            "type": "tool_call",
+                            "type": "content",
                             "role": "assistant",
-                            "content": f"{name}({args_str})",
+                            "content": m.get("content"),
                             "media": [],
                             "conversation_id": cid,
                         })
-                elif m.get("content"):
-                    ui.append({
-                        "type": "message",
-                        "role": "assistant",
-                        "content": m["content"],
-                        "media": [],
-                        "conversation_id": cid,
-                    })
+
+                ui_segments = m.get("_ui_segments")
+                if ui_segments == ["content", "tool_calls"]:
+                    _append_content()
+                    _append_tool_calls()
+                    continue
+
+                _append_tool_calls()
+                _append_content()
 
             # role == "tool" or "system": skip — internal plumbing, not shown in UI
 
@@ -292,10 +326,11 @@ class NanochatChannel(BaseChannel):
             try:
                 token = _register_file(p)
                 name = Path(p).name
-                result.append(f"/file/{token}?name={name}")
+                result.append(f"/file/{token}?name={quote(name)}")
             except Exception:
                 result.append(p)
         return result
+
 
     # ------------------------------------------------------------------
     # Outbound message handler
@@ -310,6 +345,20 @@ class NanochatChannel(BaseChannel):
         is_stream_think = bool(msg.metadata.get("_stream_think"))
         is_raw_response = bool(msg.metadata.get("_raw_response"))
         is_stream_tool_delta = bool(msg.metadata.get("_stream_tool_delta"))
+        is_message_tool_delivery = bool(msg.metadata.get("_sent_via_message_tool"))
+
+        if is_message_tool_delivery:
+            return
+
+        is_stream_done = bool(msg.metadata.get("_stream_done"))
+        if is_stream_done:
+            # Session has been saved; discard all streaming replay state so that
+            # reconnecting clients read from the session file instead of replaying
+            # a stale in-flight buffer.
+            self._active_streams.discard(conversation_id)
+            self._stream_segments.pop(conversation_id, None)
+            self._cur_round.pop(conversation_id, None)
+            return
 
         if is_stream_tool_delta:
             # Accumulate latest full state per tool-call index for reconnect replay.
@@ -317,10 +366,13 @@ class NanochatChannel(BaseChannel):
                 delta = json.loads(msg.content)
                 idx = delta.get("index", 0)
                 cur = self._cur_round.setdefault(conversation_id, {})
+                name = delta.get("name", "")
+                arguments = delta.get("arguments", "")
                 cur.setdefault("tool_deltas", {})[idx] = {
-                    "name": delta.get("name", ""),
-                    "arguments": delta.get("arguments", ""),
+                    "name": name,
+                    "arguments": arguments,
                 }
+                self._upsert_cur_round_tool_item(cur, idx, name, arguments)
             except Exception:
                 pass
             await self._broadcast(conversation_id, {
@@ -335,7 +387,7 @@ class NanochatChannel(BaseChannel):
             # Persistence is handled by AgentLoop._save_turn which writes a
             # _ui_only entry to the session JSONL after each round completes.
             cur = self._cur_round.setdefault(conversation_id, {})
-            cur["thinking"] = cur.get("thinking", "") + msg.content
+            self._append_cur_round_text_item(cur, "thinking", msg.content)
             await self._broadcast(conversation_id, {
                 "type": "stream_think_delta",
                 "content": msg.content,
@@ -346,9 +398,9 @@ class NanochatChannel(BaseChannel):
         if is_stream_token:
             # Accumulate content text for reconnect replay.
             cur = self._cur_round.setdefault(conversation_id, {})
-            cur["content"] = cur.get("content", "") + msg.content
+            self._append_cur_round_text_item(cur, "content", msg.content)
             await self._broadcast(conversation_id, {
-                "type": "stream_delta",
+                "type": "stream_content_delta",
                 "role": "assistant",
                 "content": msg.content,
                 "conversation_id": conversation_id,
@@ -358,11 +410,11 @@ class NanochatChannel(BaseChannel):
         if is_tool_hint:
             msg_type = "tool_call"
         elif is_progress:
-            msg_type = "progress"
+            msg_type = "think"
         elif is_raw_response:
             msg_type = "raw_response"
         else:
-            msg_type = "message"
+            msg_type = "content"
 
         payload: dict[str, Any] = {
             "type": msg_type,
@@ -378,17 +430,12 @@ class NanochatChannel(BaseChannel):
         if should_signal:
             if is_tool_hint:
                 # Commit the current round into _stream_segments before clearing it.
-                # Order: accumulated thinking → stream_end → tool_call (appended below).
+                # Preserve the round's original live ordering before flushing it.
                 cur = self._cur_round.pop(conversation_id, {})
                 segs = self._stream_segments.setdefault(conversation_id, [])
-                if cur.get("thinking"):
-                    segs.append({
-                        "type": "stream_think_delta",
-                        "content": cur["thinking"],
-                        "conversation_id": conversation_id,
-                    })
+                segs.extend(self._cur_round_to_replay_payloads(conversation_id, cur))
                 segs.append({"type": "stream_end", "conversation_id": conversation_id})
-            elif msg_type in ("message", "raw_response"):
+            elif msg_type in ("content", "raw_response"):
                 # Turn is done; discard all replay state.
                 self._active_streams.discard(conversation_id)
                 self._stream_segments.pop(conversation_id, None)
@@ -409,6 +456,69 @@ class NanochatChannel(BaseChannel):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _append_cur_round_text_item(cur: dict[str, Any], kind: str, content: str) -> None:
+        """Append a streaming text item while preserving adjacency order."""
+        if not content:
+            return
+        items = cur.setdefault("items", [])
+        last = items[-1] if items else None
+        if last and last.get("kind") == kind:
+            last["content"] = (last.get("content") or "") + content
+            return
+        items.append({"kind": kind, "content": content})
+
+    @staticmethod
+    def _upsert_cur_round_tool_item(
+        cur: dict[str, Any], index: int, name: str, arguments: str
+    ) -> None:
+        """Keep the first-seen tool-call position while updating its latest state."""
+        items = cur.setdefault("items", [])
+        for item in items:
+            if item.get("kind") == "tool_call" and item.get("index") == index:
+                item["name"] = name
+                item["arguments"] = arguments
+                return
+        items.append({
+            "kind": "tool_call",
+            "index": index,
+            "name": name,
+            "arguments": arguments,
+        })
+
+    @staticmethod
+    def _cur_round_to_replay_payloads(
+        conversation_id: str, cur: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Serialize the current round into replayable WS payloads in arrival order."""
+        payloads: list[dict[str, Any]] = []
+        for item in cur.get("items", []):
+            kind = item.get("kind")
+            if kind == "thinking" and item.get("content"):
+                payloads.append({
+                    "type": "stream_think_delta",
+                    "content": item["content"],
+                    "conversation_id": conversation_id,
+                })
+            elif kind == "content" and item.get("content"):
+                payloads.append({
+                    "type": "stream_content_delta",
+                    "role": "assistant",
+                    "content": item["content"],
+                    "conversation_id": conversation_id,
+                })
+            elif kind == "tool_call":
+                payloads.append({
+                    "type": "stream_tool_call_delta",
+                    "content": json.dumps({
+                        "index": item.get("index", 0),
+                        "name": item.get("name", ""),
+                        "arguments": item.get("arguments", ""),
+                    }, ensure_ascii=False),
+                    "conversation_id": conversation_id,
+                })
+        return payloads
 
     async def _broadcast(self, conversation_id: str, payload: dict) -> None:
         """Send a JSON payload to all WebSocket clients of a conversation."""
@@ -487,9 +597,13 @@ class NanochatChannel(BaseChannel):
             or "_".join(file_path.name.split("_")[1:])
             or file_path.name
         )
+        ascii_name = "".join(ch if ord(ch) < 128 else "_" for ch in download_name) or "download"
         return aiohttp_web.FileResponse(file_path, headers={
             "Content-Type": mime or "application/octet-stream",
-            "Content-Disposition": f'attachment; filename="{download_name}"',
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_name}"; '
+                f"filename*=UTF-8''{quote(download_name)}"
+            ),
         })
 
     async def _handle_list_conversations(self, request: Any) -> Any:
@@ -562,7 +676,7 @@ class NanochatChannel(BaseChannel):
 
         # Echo the user message to all connected WS clients (other tabs).
         await self._broadcast(cid, {
-            "type": "message",
+            "type": "content",
             "role": "user",
             "content": content,
             "media": media,
@@ -589,7 +703,15 @@ class NanochatChannel(BaseChannel):
     ) -> None:
         self._active_streams.add(conversation_id)
         self._stream_segments[conversation_id] = []
-        self._cur_round.pop(conversation_id, None)
+        self._cur_round[conversation_id] = {
+            # Keep the in-flight user message available for reconnect replay.
+            # Slash commands are not rendered as user bubbles in the web UI.
+            **(
+                {"pending_user": {"content": content, "media": media}}
+                if (content or media) and not content.startswith("/")
+                else {}
+            ),
+        }
         await self._broadcast(conversation_id, {
             "type": "stream_start",
             "conversation_id": conversation_id,
@@ -626,6 +748,22 @@ class NanochatChannel(BaseChannel):
         # If a turn is still in-flight, replay the full mid-turn state so the
         # reconnecting client sees the same picture as clients that stayed connected.
         if cid in self._active_streams:
+            cur = self._cur_round.get(cid, {})
+
+            pending_user = cur.get("pending_user")
+            if pending_user:
+                try:
+                    await ws.send_str(json.dumps({
+                        "type": "content",
+                        "role": "user",
+                        "content": pending_user.get("content", ""),
+                        "media": pending_user.get("media", []),
+                        "conversation_id": cid,
+                        "_replay": True,
+                    }, ensure_ascii=False))
+                except Exception:
+                    pass
+
             # 1. Reset the live panel first (before any mid-turn segments arrive).
             try:
                 await ws.send_str(json.dumps({
@@ -645,40 +783,13 @@ class NanochatChannel(BaseChannel):
                 except Exception:
                     break
 
-            # 3. Replay the current in-progress round's partial state.
-            cur = self._cur_round.get(cid, {})
-            thinking = cur.get("thinking", "")
-            if thinking:
+            # 3. Replay the current in-progress round's partial state in the
+            # same order it originally streamed.
+            for payload in self._cur_round_to_replay_payloads(cid, cur):
                 try:
-                    await ws.send_str(json.dumps({
-                        "type": "stream_think_delta",
-                        "content": thinking,
-                        "conversation_id": cid,
-                    }, ensure_ascii=False))
+                    await ws.send_str(json.dumps(payload, ensure_ascii=False))
                 except Exception:
-                    pass
-
-            for idx, delta in cur.get("tool_deltas", {}).items():
-                try:
-                    await ws.send_str(json.dumps({
-                        "type": "stream_tool_call_delta",
-                        "content": json.dumps({"index": idx, **delta}, ensure_ascii=False),
-                        "conversation_id": cid,
-                    }, ensure_ascii=False))
-                except Exception:
-                    pass
-
-            content = cur.get("content", "")
-            if content:
-                try:
-                    await ws.send_str(json.dumps({
-                        "type": "stream_delta",
-                        "role": "assistant",
-                        "content": content,
-                        "conversation_id": cid,
-                    }, ensure_ascii=False))
-                except Exception:
-                    pass
+                    break
 
         try:
             async for msg in ws:
@@ -689,13 +800,13 @@ class NanochatChannel(BaseChannel):
                         continue
 
                     msg_type = data.get("type")
-                    if msg_type == "message":
+                    if msg_type == "content":
                         content = (data.get("content") or "").strip()
                         media = data.get("media") or []
                         if content or media:
                             # Echo to other subscribers
                             await self._broadcast(cid, {
-                                "type": "message",
+                                "type": "content",
                                 "role": "user",
                                 "content": content,
                                 "media": media,

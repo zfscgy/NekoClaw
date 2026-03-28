@@ -153,14 +153,16 @@ class SessionManager:
         path = self._get_session_path(session.key)
 
         with open(path, "w", encoding="utf-8") as f:
-            metadata_line = {
+            metadata_line: dict[str, Any] = {
                 "_type": "metadata",
                 "key": session.key,
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
-                "metadata": session.metadata,
-                "last_consolidated": session.last_consolidated
             }
+            if session.last_consolidated:
+                metadata_line["last_consolidated"] = session.last_consolidated
+            if session.metadata:
+                metadata_line["metadata"] = session.metadata
             f.write(json.dumps(metadata_line, ensure_ascii=False) + "\n")
             for msg in session.messages:
                 f.write(json.dumps(msg, ensure_ascii=False) + "\n")

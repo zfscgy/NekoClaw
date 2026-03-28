@@ -30,9 +30,12 @@ const props = defineProps({
   role: { type: String, required: true },
   content: { type: String, default: '' },
   media: { type: Array, default: () => [] },
+  appendCursor: { type: Boolean, default: false },
 })
 
 defineEmits(['lightbox'])
 
-const rendered = computed(() => renderMarkdown(props.content))
+const rendered = computed(() =>
+  renderMarkdown(props.content) + (props.appendCursor ? '<span class="streaming-cursor"></span>' : '')
+)
 </script>

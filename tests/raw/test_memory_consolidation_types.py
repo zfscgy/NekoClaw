@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from nanobot.agent.memory import MemoryStore
-from nanobot.providers.base import LLMResponse, ToolCallRequest
+from nanobot.providers.base import StreamDelta, ToolCallRequest, build_stream_deltas
 
 
 def _make_session(message_count: int = 30, memory_window: int = 50):
@@ -27,8 +27,8 @@ def _make_session(message_count: int = 30, memory_window: int = 50):
 
 
 def _make_tool_response(history_entry, memory_update):
-    """Create an LLMResponse with a save_memory tool call."""
-    return LLMResponse(
+    """Create complete deltas with a save_memory tool call."""
+    return build_stream_deltas(
         content=None,
         tool_calls=[
             ToolCallRequest(
@@ -98,7 +98,7 @@ class TestMemoryConsolidationTypeHandling:
         provider = AsyncMock()
 
         # Simulate arguments being a JSON string (not yet parsed)
-        response = LLMResponse(
+        response = build_stream_deltas(
             content=None,
             tool_calls=[
                 ToolCallRequest(
@@ -125,7 +125,7 @@ class TestMemoryConsolidationTypeHandling:
         store = MemoryStore(tmp_path)
         provider = AsyncMock()
         provider.chat = AsyncMock(
-            return_value=LLMResponse(content="I summarized the conversation.", tool_calls=[])
+            return_value=[StreamDelta(type="content", content="I summarized the conversation.")]
         )
         session = _make_session(message_count=60)
 
@@ -153,7 +153,7 @@ class TestMemoryConsolidationTypeHandling:
         provider = AsyncMock()
 
         # Simulate arguments being a list containing a dict
-        response = LLMResponse(
+        response = build_stream_deltas(
             content=None,
             tool_calls=[
                 ToolCallRequest(
@@ -181,7 +181,7 @@ class TestMemoryConsolidationTypeHandling:
         store = MemoryStore(tmp_path)
         provider = AsyncMock()
 
-        response = LLMResponse(
+        response = build_stream_deltas(
             content=None,
             tool_calls=[
                 ToolCallRequest(
@@ -204,7 +204,7 @@ class TestMemoryConsolidationTypeHandling:
         store = MemoryStore(tmp_path)
         provider = AsyncMock()
 
-        response = LLMResponse(
+        response = build_stream_deltas(
             content=None,
             tool_calls=[
                 ToolCallRequest(

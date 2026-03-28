@@ -4,12 +4,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nanobot.tools.web_search import searxng_search
+from nanobot.tools.web_search import lightsear_search
 
 
 def test__search_duckduckgo():
     query = "今日头条 新闻 2026年3月22日 国际 国内"
-    results = searxng_search(query, 10)
+    results = lightsear_search(query, 10)
     assert len(results) == 10
     assert all(isinstance(result, dict) for result in results)
     assert all("title" in result for result in results)

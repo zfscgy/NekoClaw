@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
+from nanobot.providers.base import parse_stream_deltas
 from nanobot.utils.helpers import ensure_dir
 
 if TYPE_CHECKING:
@@ -111,7 +112,7 @@ class MemoryStore:
 {chr(10).join(lines)}"""
 
         try:
-            response = await provider.chat(
+            deltas = await provider.chat(
                 messages=[
                     {"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation."},
                     {"role": "user", "content": prompt},
@@ -119,12 +120,13 @@ class MemoryStore:
                 tools=_SAVE_MEMORY_TOOL,
                 model=model,
             )
+            _content, tool_calls, _thinking = parse_stream_deltas(deltas)
 
-            if not response.has_tool_calls:
+            if not tool_calls:
                 logger.warning("Memory consolidation: LLM did not call save_memory, skipping")
                 return False
 
-            args = response.tool_calls[0].arguments
+            args = tool_calls[0].arguments
             # Some providers return arguments as a JSON string instead of dict
             if isinstance(args, str):
                 args = json.loads(args)

@@ -15,7 +15,7 @@ from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.config.schema import ExecToolConfig
-from nanobot.providers.base import LLMProvider
+from nanobot.providers.base import LLMProvider, parse_stream_deltas
 
 
 class SubagentManager:
@@ -121,7 +121,7 @@ class SubagentManager:
             while iteration < max_iterations:
                 iteration += 1
 
-                response = await self.provider.chat(
+                deltas = await self.provider.chat(
                     messages=messages,
                     tools=tools.get_definitions(),
                     model=self.model,
@@ -129,8 +129,9 @@ class SubagentManager:
                     max_tokens=self.max_tokens,
                     reasoning_effort=self.reasoning_effort,
                 )
+                response_content, response_tool_calls, _response_thinking = parse_stream_deltas(deltas)
 
-                if response.has_tool_calls:
+                if response_tool_calls:
                     # Add assistant message with tool calls
                     tool_call_dicts = [
                         {
@@ -141,16 +142,16 @@ class SubagentManager:
                                 "arguments": json.dumps(tc.arguments, ensure_ascii=False),
                             },
                         }
-                        for tc in response.tool_calls
+                        for tc in response_tool_calls
                     ]
                     messages.append({
                         "role": "assistant",
-                        "content": response.content or "",
+                        "content": response_content or "",
                         "tool_calls": tool_call_dicts,
                     })
 
                     # Execute tools
-                    for tool_call in response.tool_calls:
+                    for tool_call in response_tool_calls:
                         args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                         logger.debug("Subagent [{}] executing: {} with arguments: {}", task_id, tool_call.name, args_str)
                         result = await tools.execute(tool_call.name, tool_call.arguments)
@@ -161,7 +162,7 @@ class SubagentManager:
                             "content": result,
                         })
                 else:
-                    final_result = response.content
+                    final_result = response_content
                     break
 
             if final_result is None:

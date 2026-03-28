@@ -9,6 +9,7 @@
         <span class="chevron">▶</span>
         <span>{{ isOpen ? 'Actions' : label }}</span>
         <span class="step-count">{{ visible.length }} step{{ visible.length === 1 ? '' : 's' }}</span>
+        <span v-if="appendCursor" class="streaming-cursor"></span>
       </summary>
       <div class="action-items">
         <div
@@ -18,12 +19,10 @@
           :class="item.type === 'tool_call' ? 'is-tool' : 'is-progress'"
         >
           <span v-if="item.type === 'tool_call'">
-            ⚙️ <span class="tool-name">{{ toolCallName(item.content) }}</span>{{ toolCallRest(item.content) }}
+            <span class="tool-name">{{ toolCallName(item.content) }}</span>{{ toolCallRest(item.content) }}
           </span>
           <div v-else-if="item.type === 'reasoning_response'" class="reasoning-response" v-html="renderMarkdown(item.content)"></div>
-          <span v-else>
-            <span style="margin-right:5px">💭</span>{{ item.content }}
-          </span>
+          <span v-else>{{ item.content }}</span>
         </div>
       </div>
     </details>
@@ -38,6 +37,7 @@ import { renderMarkdown } from '../utils/markdown.js'
 const props = defineProps({
   items: { type: Array, required: true },
   isOpen: { type: Boolean, required: true },
+  appendCursor: { type: Boolean, default: false },
 })
 
 const emit = defineEmits(['toggle'])

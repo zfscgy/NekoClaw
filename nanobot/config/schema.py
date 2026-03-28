@@ -298,7 +298,6 @@ class GatewayConfig(Base):
 class WebSearchConfig(Base):
     """Web search tool configuration."""
 
-    searxng_url: str = "" 
     max_results: int = 10
 
 

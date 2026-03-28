@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from nanobot.providers.azure_openai_provider import AzureOpenAIProvider
-from nanobot.providers.base import LLMResponse
+from nanobot.providers.base import StreamDelta, parse_stream_deltas
 
 
 def test_azure_openai_provider_init():
@@ -188,12 +188,11 @@ async def test_chat_success():
         messages = [{"role": "user", "content": "Hello"}]
         result = await provider.chat(messages, model="custom-deployment")
         
-        assert isinstance(result, LLMResponse)
-        assert result.content == "Hello! How can I help you today?"
-        assert result.finish_reason == "stop"
-        assert result.usage["prompt_tokens"] == 12
-        assert result.usage["completion_tokens"] == 18
-        assert result.usage["total_tokens"] == 30
+        assert all(isinstance(delta, StreamDelta) for delta in result)
+        content, tool_calls, thinking = parse_stream_deltas(result)
+        assert content == "Hello! How can I help you today?"
+        assert tool_calls == []
+        assert thinking is None
         
         # Verify URL was built with the provided model as deployment name
         call_args = mock_context.post.call_args
@@ -281,12 +280,13 @@ async def test_chat_with_tool_calls():
         tools = [{"type": "function", "function": {"name": "get_weather", "parameters": {}}}]
         result = await provider.chat(messages, tools=tools, model="weather-model")
         
-        assert isinstance(result, LLMResponse)
-        assert result.content is None
-        assert result.finish_reason == "tool_calls"
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].name == "get_weather"
-        assert result.tool_calls[0].arguments == {"location": "San Francisco"}
+        assert all(isinstance(delta, StreamDelta) for delta in result)
+        content, tool_calls, thinking = parse_stream_deltas(result)
+        assert content is None
+        assert thinking is None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].name == "get_weather"
+        assert tool_calls[0].arguments == {"location": "San Francisco"}
 
 
 @pytest.mark.asyncio
@@ -310,10 +310,11 @@ async def test_chat_api_error():
         messages = [{"role": "user", "content": "Hello"}]
         result = await provider.chat(messages)
         
-        assert isinstance(result, LLMResponse)
-        assert "Azure OpenAI API Error 401" in result.content
-        assert "Invalid authentication credentials" in result.content
-        assert result.finish_reason == "error"
+        content, tool_calls, thinking = parse_stream_deltas(result)
+        assert "Azure OpenAI API Error 401" in content
+        assert "Invalid authentication credentials" in content
+        assert tool_calls == []
+        assert thinking is None
 
 
 @pytest.mark.asyncio
@@ -333,9 +334,10 @@ async def test_chat_connection_error():
         messages = [{"role": "user", "content": "Hello"}]
         result = await provider.chat(messages)
         
-        assert isinstance(result, LLMResponse)
-        assert "Error calling Azure OpenAI: Exception('Connection failed')" in result.content
-        assert result.finish_reason == "error"
+        content, tool_calls, thinking = parse_stream_deltas(result)
+        assert "Error calling Azure OpenAI: Exception('Connection failed')" in content
+        assert tool_calls == []
+        assert thinking is None
 
 
 def test_parse_response_malformed():
@@ -350,9 +352,10 @@ def test_parse_response_malformed():
     malformed_response = {"usage": {"prompt_tokens": 10}}
     result = provider._parse_response(malformed_response)
     
-    assert isinstance(result, LLMResponse)
-    assert "Error parsing Azure OpenAI response" in result.content
-    assert result.finish_reason == "error"
+    content, tool_calls, thinking = parse_stream_deltas(result)
+    assert "Error parsing Azure OpenAI response" in content
+    assert tool_calls == []
+    assert thinking is None
 
 
 def test_get_default_model():

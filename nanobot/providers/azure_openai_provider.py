@@ -9,7 +9,7 @@ from urllib.parse import urljoin
 import httpx
 import json_repair
 
-from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
+from nanobot.providers.base import LLMProvider, StreamDelta, ToolCallRequest, build_stream_deltas
 
 _AZURE_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name"})
 
@@ -118,7 +118,7 @@ class AzureOpenAIProvider(LLMProvider):
         max_tokens: int = 4096,
         temperature: float = 0.7,
         reasoning_effort: str | None = None,
-    ) -> LLMResponse:
+    ) -> list[StreamDelta]:
         """
         Send a chat completion request to Azure OpenAI.
 
@@ -131,7 +131,7 @@ class AzureOpenAIProvider(LLMProvider):
             reasoning_effort: Optional reasoning effort parameter.
 
         Returns:
-            LLMResponse with content and/or tool calls.
+            Complete response as a list of ``StreamDelta`` objects.
         """
         deployment_name = model or self.default_model
         url = self._build_chat_url(deployment_name)
@@ -144,22 +144,21 @@ class AzureOpenAIProvider(LLMProvider):
             async with httpx.AsyncClient(timeout=60.0, verify=True) as client:
                 response = await client.post(url, headers=headers, json=payload)
                 if response.status_code != 200:
-                    return LLMResponse(
-                        content=f"Azure OpenAI API Error {response.status_code}: {response.text}",
-                        finish_reason="error",
-                    )
+                    return [
+                        StreamDelta(
+                            type="content",
+                            content=f"Azure OpenAI API Error {response.status_code}: {response.text}",
+                        )
+                    ]
                 
                 response_data = response.json()
                 return self._parse_response(response_data)
 
         except Exception as e:
-            return LLMResponse(
-                content=f"Error calling Azure OpenAI: {repr(e)}",
-                finish_reason="error",
-            )
+            return [StreamDelta(type="content", content=f"Error calling Azure OpenAI: {repr(e)}")]
 
-    def _parse_response(self, response: dict[str, Any]) -> LLMResponse:
-        """Parse Azure OpenAI response into our standard format."""
+    def _parse_response(self, response: dict[str, Any]) -> list[StreamDelta]:
+        """Parse Azure OpenAI response into complete stream-style deltas."""
         try:
             choice = response["choices"][0]
             message = choice["message"]
@@ -180,30 +179,16 @@ class AzureOpenAIProvider(LLMProvider):
                         )
                     )
 
-            usage = {}
-            if response.get("usage"):
-                usage_data = response["usage"]
-                usage = {
-                    "prompt_tokens": usage_data.get("prompt_tokens", 0),
-                    "completion_tokens": usage_data.get("completion_tokens", 0),
-                    "total_tokens": usage_data.get("total_tokens", 0),
-                }
-
             reasoning_content = message.get("reasoning_content") or None
 
-            return LLMResponse(
+            return build_stream_deltas(
                 content=message.get("content"),
                 tool_calls=tool_calls,
-                finish_reason=choice.get("finish_reason", "stop"),
-                usage=usage,
                 reasoning_content=reasoning_content,
             )
 
         except (KeyError, IndexError) as e:
-            return LLMResponse(
-                content=f"Error parsing Azure OpenAI response: {str(e)}",
-                finish_reason="error",
-            )
+            return [StreamDelta(type="content", content=f"Error parsing Azure OpenAI response: {str(e)}")]
 
     def get_default_model(self) -> str:
         """Get the default model (also used as default deployment name)."""
