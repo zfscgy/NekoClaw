@@ -45,6 +45,8 @@ dependencies = [
     "chardet>=3.0.2,<6.0.0",
     "openai>=2.8.0",
     "aiohttp>=3.9,<4.0",
+    "lxml>=5.0",
+    "scrapling[fetchers]>=0.4.2",
 ]
 
 [project.optional-dependencies]
