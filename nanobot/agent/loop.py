@@ -709,11 +709,9 @@ class AgentLoop:
 
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {}", msg.channel, msg.sender_id, preview)
-        meta = dict(msg.metadata or {})
-        meta["_raw_response"] = True
         return OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, content=final_content,
-            metadata=meta,
+            metadata=dict(msg.metadata or {}),
         )
 
     _SESSION_ENTRY_KEYS = frozenset({

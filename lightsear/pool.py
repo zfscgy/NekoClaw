@@ -6,7 +6,7 @@ import threading
 import typing as t
 from threading import Lock
 
-from scrapling.fetchers import StealthySession
+from lightsear.playwright_client import PlaywrightCDPSession
 
 
 class _SessionWorker:
@@ -14,15 +14,15 @@ class _SessionWorker:
         self,
         *,
         timeout: float,
+        remote_debug_port: int,
         proxy: str | None,
         headless: bool,
-        disable_resources: bool,
         session_factory: "t.Callable[[], t.Any] | None" = None,
     ) -> None:
         self.timeout = timeout
+        self.remote_debug_port = remote_debug_port
         self.proxy = proxy
         self.headless = headless
-        self.disable_resources = disable_resources
         self._session_factory = session_factory
         self._tasks: "queue.Queue[tuple[t.Callable[..., t.Any] | None, tuple[t.Any, ...], dict[str, t.Any], cf.Future[t.Any], t.Callable[[], None] | None]]" = queue.Queue()
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -32,11 +32,11 @@ class _SessionWorker:
         managed = (
             self._session_factory()
             if self._session_factory is not None
-            else StealthySession(
+            else PlaywrightCDPSession(
+                remote_debug_port=self.remote_debug_port,
                 timeout=int(self.timeout * 1000),
                 proxy=self.proxy,
                 headless=self.headless,
-                disable_resources=self.disable_resources,
             )
         )
         session = managed.__enter__() if hasattr(managed, "__enter__") else managed
@@ -89,9 +89,9 @@ class SessionPool:
         *,
         size: int = 4,
         timeout: float = 20.0,
+        remote_debug_port: int = 9222,
         proxy: str | None = None,
         headless: bool = True,
-        disable_resources: bool = True,
         session_factory: "t.Callable[[], t.Any] | None" = None,
     ) -> None:
         if size < 1:
@@ -99,9 +99,9 @@ class SessionPool:
 
         self.size = size
         self.timeout = timeout
+        self.remote_debug_port = remote_debug_port
         self.proxy = proxy
         self.headless = headless
-        self.disable_resources = disable_resources
         self._session_factory = session_factory
         self._available: queue.Queue[_SessionWorker] = queue.Queue(maxsize=size)
         self._workers: list[_SessionWorker] = []
@@ -111,9 +111,9 @@ class SessionPool:
         for _ in range(size):
             worker = _SessionWorker(
                 timeout=timeout,
+                remote_debug_port=remote_debug_port,
                 proxy=proxy,
                 headless=headless,
-                disable_resources=disable_resources,
                 session_factory=session_factory,
             )
             self._workers.append(worker)
@@ -165,7 +165,7 @@ class SessionPoolManager:
         self,
         pool_factory: "t.Callable[..., SessionPool] | None" = None,
     ) -> None:
-        self._pools: dict[tuple[int, float, str | None, bool, bool], SessionPool] = {}
+        self._pools: dict[tuple[int, float, int, str | None, bool], SessionPool] = {}
         self._lock = Lock()
         self._closed = False
         self._pool_factory = pool_factory or SessionPool
@@ -175,11 +175,11 @@ class SessionPoolManager:
         *,
         size: int,
         timeout: float,
+        remote_debug_port: int = 9222,
         proxy: str | None,
         headless: bool = True,
-        disable_resources: bool = True,
     ) -> SessionPool:
-        key = (size, timeout, proxy, headless, disable_resources)
+        key = (size, timeout, remote_debug_port, proxy, headless)
         with self._lock:
             if self._closed:
                 raise RuntimeError("Session pool manager is closed")
@@ -188,9 +188,9 @@ class SessionPoolManager:
                 pool = self._pool_factory(
                     size=size,
                     timeout=timeout,
+                    remote_debug_port=remote_debug_port,
                     proxy=proxy,
                     headless=headless,
-                    disable_resources=disable_resources,
                 )
                 self._pools[key] = pool
             return pool

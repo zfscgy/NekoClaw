@@ -46,16 +46,35 @@ def _run_engine(pool: SessionPool, name: str, keyword: str) -> list[SearchResult
     return pool.submit(ENGINES[name], keyword).result()
 
 
+def _run_web_fetch(session: t.Any, url: str, wait: int) -> t.Any:
+    return session.fetch(url, wait=wait)
+
+
+def _strip_scripts_and_styles(html_text: str) -> str:
+    from lxml import html
+
+    root = html.fromstring(html_text)
+    for node in root.xpath("//script|//style"):
+        parent = node.getparent()
+        if parent is not None:
+            parent.remove(node)
+    return html.tostring(root, encoding="unicode", method="html")
+
+
 def _get_persistent_pool(
     *,
     size: int,
     timeout: float,
+    remote_debug_port: int,
     proxy: str | None,
+    headless: bool = True,
 ) -> SessionPool:
     return _SESSION_POOL_MANAGER.get_pool(
         size=size,
         timeout=timeout,
+        remote_debug_port=remote_debug_port,
         proxy=proxy,
+        headless=headless,
     )
 
 
@@ -99,6 +118,7 @@ def search(
     *,
     sources: "Sequence[str] | None" = None,
     timeout: float = DEFAULT_TIMEOUT,
+    remote_debug_port: int = 9222,
     proxy: "str | None" = None,
     session_pool: "SessionPool | None" = None,
     pool_size: int | None = None,
@@ -114,6 +134,7 @@ def search(
     :param keyword: Query string.
     :param sources: Engine names to query; default is all built-in engines.
     :param timeout: Timeout in seconds (converted to ms for the browser session).
+    :param remote_debug_port: Browser remote debugging port used by Playwright (e.g. ``9222``).
     :param proxy: Optional proxy URL, e.g. ``"http://127.0.0.1:10808"``.
     :param session_pool: Optional persistent session pool to reuse across calls.
     :param pool_size: Number of sessions in the cached default pool for this config.
@@ -129,6 +150,7 @@ def search(
         pool = _get_persistent_pool(
             size=requested_pool_size,
             timeout=timeout,
+            remote_debug_port=remote_debug_port,
             proxy=proxy,
         )
         raw, errors = _execute_search(pool, keyword, names, parallel=parallel)
@@ -168,8 +190,55 @@ def search(
     return aggregated
 
 
+def web_fetch(
+    url: str,
+    *,
+    mode: t.Literal["markdown", "text"] = "markdown",
+    timeout: float = 30.0,
+    remote_debug_port: int = 9222,
+    proxy: str | None = None,
+    headless: bool = True,
+    wait: int = 8_000,
+    session_pool: "SessionPool | None" = None,
+    pool_size: int | None = None,
+) -> str:
+    """Fetch a URL and extract readable content as markdown or text.
+
+    This mirrors nanobot's previous ``web_fetch`` behavior, but is exposed as a
+    first-class lightsear API for reuse across projects.
+    """
+    if mode not in {"markdown", "text"}:
+        raise ValueError("mode must be 'markdown' or 'text'")
+    if pool_size is not None and pool_size < 1:
+        raise ValueError("pool_size must be at least 1")
+
+    # Keep this import local so users can still import search-only APIs in
+    # environments without markdown conversion dependencies.
+    from markdownify import markdownify as to_markdown
+
+    if session_pool is None:
+        requested_pool_size = pool_size or 1
+        pool = _get_persistent_pool(
+            size=requested_pool_size,
+            timeout=timeout,
+            remote_debug_port=remote_debug_port,
+            proxy=proxy,
+            headless=headless,
+        )
+    else:
+        pool = session_pool
+
+    response = pool.submit(_run_web_fetch, url, wait).result()
+    html_text = response.body.decode("utf-8", errors="replace")
+    cleaned_html = _strip_scripts_and_styles(html_text)
+    if mode == "markdown":
+        return to_markdown(cleaned_html)
+    return cleaned_html
+
+
 __all__ = [
     "search",
+    "web_fetch",
     "SessionPool",
     "SessionPoolManager",
     "SearchResult",

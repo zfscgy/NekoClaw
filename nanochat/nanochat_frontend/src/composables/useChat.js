@@ -59,6 +59,11 @@ function _stringifyToolArguments(value) {
   }
 }
 
+function _extractToolCallId(rawContent) {
+  return _extractPartialStringField(rawContent, 'id')
+    ?? null
+}
+
 function _normalizeToolCallPayload(payload, previous) {
   if (!payload || typeof payload !== 'object') return null
 
@@ -72,11 +77,13 @@ function _normalizeToolCallPayload(payload, previous) {
   const rawName = candidate.name ?? fn?.name ?? previous?.name ?? ''
   const rawArguments = candidate.arguments ?? fn?.arguments ?? previous?.arguments ?? ''
   const rawIndex = candidate.index ?? previous?.index ?? 0
+  const rawToolCallId = candidate.tool_call_id ?? candidate.id ?? previous?.toolCallId ?? ''
 
   return {
     index: Number.isFinite(Number(rawIndex)) ? Number(rawIndex) : (previous?.index ?? 0),
     name: typeof rawName === 'string' ? rawName : String(rawName || ''),
     arguments: _stringifyToolArguments(rawArguments),
+    toolCallId: typeof rawToolCallId === 'string' ? rawToolCallId : String(rawToolCallId || ''),
   }
 }
 
@@ -137,11 +144,10 @@ export function useChat() {
   let ws = null
   let wsReconnectTimer = null
   let wsGeneration = 0
-  let pendingRawResponseContent = null
   const _openCache = {}
 
   // Per-round streaming state (reset on stream_start / stream_end)
-  let _toolCallState = {}
+  let _toolCallState = { current: null }
   let _roundStart = 0
 
   function setGroupOpen(key, val) {
@@ -212,31 +218,25 @@ export function useChat() {
   }
 
   function _handleToolCallDelta(arr, cid, rawContent) {
-    const parsed = _safeJsonParse(rawContent)
-    const hinted = Array.isArray(parsed) ? parsed.find(i => i && typeof i === 'object') : parsed
-    const hintedIndex = hinted?.index != null ? Number(hinted.index) : _extractPartialNumberField(rawContent, 'index')
-    const previous = hintedIndex != null && Number.isFinite(hintedIndex)
-      ? { index: hintedIndex, ...(_toolCallState[hintedIndex] || {}) }
-      : null
-    const delta = _parseStreamingToolCallDelta(rawContent, previous)
-    _toolCallState[delta.index] = { name: delta.name, arguments: delta.arguments }
-
-    const content = _formatToolCall(delta)
-    for (let i = arr.length - 1; i >= _roundStart; i--) {
-      if (arr[i].type === 'tool_call' && arr[i]._tcIdx === delta.index) {
-        arr[i] = { ...arr[i], content }
-        return
-      }
+    let current = _toolCallState.current
+    if (!current || current.complete) {
+      current = { name: '', arguments: '', arrIdx: arr.length, complete: false }
+      _toolCallState.current = current
+      arr.push({ type: 'tool_call', content: _formatToolCall(current), conversation_id: cid })
     }
-    arr.push({ type: 'tool_call', content, conversation_id: cid, _tcIdx: delta.index })
-  }
 
-  function _lastAssistantContent(arr) {
-    for (let i = arr.length - 1; i >= 0; i--) {
-      if (arr[i].type === 'content' && arr[i].role === 'assistant') return arr[i].content || ''
-      if (arr[i].role === 'user') break
-    }
-    return null
+    const delta = _parseStreamingToolCallDelta(rawContent, {
+      name: current.name,
+      arguments: current.arguments,
+      index: 0,
+    })
+
+    current.name = delta.name
+    current.arguments = delta.arguments
+    arr[current.arrIdx] = { ...arr[current.arrIdx], content: _formatToolCall(current) }
+
+    // In-order stream guarantee: once this JSON chunk is complete, next chunk is a new tool call.
+    if (_safeJsonParse(rawContent)) current.complete = true
   }
 
   function _updatePreview(cid, content) {
@@ -281,9 +281,8 @@ export function useChat() {
         case 'stream_start':
           isTyping.value = false
           isStreaming.value = false
-          _toolCallState = {}
+          _toolCallState = { current: null }
           _roundStart = arr.length
-          pendingRawResponseContent = null
           break
 
         case 'stream_content_delta':
@@ -306,27 +305,10 @@ export function useChat() {
             const converted = _tryConvertMessageToolCall(arr[i], cid)
             if (converted) arr[i] = converted
           }
-          pendingRawResponseContent = _lastAssistantContent(arr)
           isStreaming.value = false
-          _toolCallState = {}
+          _toolCallState = { current: null }
           _roundStart = arr.length
           break
-
-        case 'raw_response': {
-          isTyping.value = false
-          isStreaming.value = false
-          const content = msg.content || ''
-          const fp = '\x00' + content
-          const isDup = arr.slice(-20).some(m =>
-            m.role === 'assistant' && ('\x00' + (m.content || '')) === fp
-          ) || (pendingRawResponseContent !== null && pendingRawResponseContent === content)
-          pendingRawResponseContent = null
-          if (!isDup) {
-            arr.push({ type: 'content', role: 'assistant', content, media: msg.media || [], conversation_id: cid })
-            _updatePreview(cid, content)
-          }
-          break
-        }
 
         case 'content': {
           if (msg.role === 'assistant') {

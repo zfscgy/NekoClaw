@@ -46,7 +46,8 @@ dependencies = [
     "openai>=2.8.0",
     "aiohttp>=3.9,<4.0",
     "lxml>=5.0",
-    "scrapling[fetchers]>=0.4.2",
+    "playwright>=1.58.0",
+    "markdownify>=1.2.2"
 ]
 
 [project.optional-dependencies]

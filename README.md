@@ -1,13 +1,13 @@
-# AQClaw
+# NekoClaw
 
 ## Install
 
 推荐新建一个 Python 虚拟环境 （conda/venv）
 ```bash
-pip install -e .
-
+pip install -e .  # 安装 NekoClaw 库以及依赖
+playwright install chromium # 安装chromium
 cd nanochat/frontend
-npm run build
+npm run build     # 编译静态前端页面
 ```
 
 ## Run

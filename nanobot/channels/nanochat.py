@@ -52,9 +52,19 @@ def _register_file(path: str) -> str:
     fresh token and cache entry.
     """
     import hashlib
-    src = Path(path).resolve()
+    src = Path(path).expanduser().resolve()
     if not src.exists() or not src.is_file():
-        raise FileNotFoundError(f"Cannot register non-existent file: {src}")
+        # Relative paths produced by the agent are relative to the workspace
+        # root, not to the process CWD.  Try resolving against the workspace.
+        if not Path(path).expanduser().is_absolute():
+            from nanobot.config.paths import get_workspace_path
+            candidate = get_workspace_path() / path
+            if candidate.exists() and candidate.is_file():
+                src = candidate
+            else:
+                raise FileNotFoundError(f"Cannot register non-existent file: {src}")
+        else:
+            raise FileNotFoundError(f"Cannot register non-existent file: {src}")
 
     # Token = first 16 hex chars of the SHA-1 of the *file content*
     # so regenerated files (different content) get a new token/cache entry.
@@ -106,9 +116,8 @@ class NanochatChannel(BaseChannel):
         #   "items": [
         #       {"kind": "thinking", "content": str},
         #       {"kind": "content", "content": str},
-        #       {"kind": "tool_call", "index": int, "name": str, "arguments": str},
+        #       {"kind": "tool_delta", "content": str},
         #   ],
-        #   "tool_deltas": {index: {name, arguments}},
         # }
         self._cur_round: dict[str, dict] = {}
         self._app: Any = None
@@ -343,7 +352,6 @@ class NanochatChannel(BaseChannel):
         is_tool_hint = bool(msg.metadata.get("_tool_hint"))
         is_stream_token = bool(msg.metadata.get("_stream_token"))
         is_stream_think = bool(msg.metadata.get("_stream_think"))
-        is_raw_response = bool(msg.metadata.get("_raw_response"))
         is_stream_tool_delta = bool(msg.metadata.get("_stream_tool_delta"))
         is_message_tool_delivery = bool(msg.metadata.get("_sent_via_message_tool"))
 
@@ -361,20 +369,10 @@ class NanochatChannel(BaseChannel):
             return
 
         if is_stream_tool_delta:
-            # Accumulate latest full state per tool-call index for reconnect replay.
-            try:
-                delta = json.loads(msg.content)
-                idx = delta.get("index", 0)
-                cur = self._cur_round.setdefault(conversation_id, {})
-                name = delta.get("name", "")
-                arguments = delta.get("arguments", "")
-                cur.setdefault("tool_deltas", {})[idx] = {
-                    "name": name,
-                    "arguments": arguments,
-                }
-                self._upsert_cur_round_tool_item(cur, idx, name, arguments)
-            except Exception:
-                pass
+            # Preserve tool-call deltas in exact arrival order for reconnect replay.
+            # This avoids index-based collisions across rounds/chunks.
+            cur = self._cur_round.setdefault(conversation_id, {})
+            self._append_cur_round_tool_delta_item(cur, msg.content)
             await self._broadcast(conversation_id, {
                 "type": "stream_tool_call_delta",
                 "content": msg.content,
@@ -411,8 +409,6 @@ class NanochatChannel(BaseChannel):
             msg_type = "tool_call"
         elif is_progress:
             msg_type = "think"
-        elif is_raw_response:
-            msg_type = "raw_response"
         else:
             msg_type = "content"
 
@@ -435,7 +431,7 @@ class NanochatChannel(BaseChannel):
                 segs = self._stream_segments.setdefault(conversation_id, [])
                 segs.extend(self._cur_round_to_replay_payloads(conversation_id, cur))
                 segs.append({"type": "stream_end", "conversation_id": conversation_id})
-            elif msg_type in ("content", "raw_response"):
+            elif msg_type == "content":
                 # Turn is done; discard all replay state.
                 self._active_streams.discard(conversation_id)
                 self._stream_segments.pop(conversation_id, None)
@@ -470,22 +466,12 @@ class NanochatChannel(BaseChannel):
         items.append({"kind": kind, "content": content})
 
     @staticmethod
-    def _upsert_cur_round_tool_item(
-        cur: dict[str, Any], index: int, name: str, arguments: str
-    ) -> None:
-        """Keep the first-seen tool-call position while updating its latest state."""
+    def _append_cur_round_tool_delta_item(cur: dict[str, Any], content: str) -> None:
+        """Append raw stream_tool_call_delta payload in arrival order."""
+        if not content:
+            return
         items = cur.setdefault("items", [])
-        for item in items:
-            if item.get("kind") == "tool_call" and item.get("index") == index:
-                item["name"] = name
-                item["arguments"] = arguments
-                return
-        items.append({
-            "kind": "tool_call",
-            "index": index,
-            "name": name,
-            "arguments": arguments,
-        })
+        items.append({"kind": "tool_delta", "content": content})
 
     @staticmethod
     def _cur_round_to_replay_payloads(
@@ -505,6 +491,12 @@ class NanochatChannel(BaseChannel):
                 payloads.append({
                     "type": "stream_content_delta",
                     "role": "assistant",
+                    "content": item["content"],
+                    "conversation_id": conversation_id,
+                })
+            elif kind == "tool_delta" and item.get("content"):
+                payloads.append({
+                    "type": "stream_tool_call_delta",
                     "content": item["content"],
                     "conversation_id": conversation_id,
                 })

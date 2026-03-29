@@ -1,11 +1,6 @@
 from typing import Literal
 
-import requests
-
 import lightsear
-from scrapling.fetchers import StealthySession
-from scrapling.core.shell import Convertor
-from markdownify import markdownify
 
 from nanobot.config import load_config
 web_config = load_config().tools.web
@@ -28,11 +23,11 @@ def lightsear_search(text: str, max_results: int = web_config.search.max_results
 
 
 def web_fetch(url: str, mode: Literal["markdown", "text"] = "markdown") -> str:
-    with StealthySession(
-        timeout=int(30 * 1000),
+    return lightsear.web_fetch(
+        url,
+        mode=mode,
+        timeout=30.0,
         proxy=web_config.proxy,
         headless=True,
-        disable_resources=True,
-    ) as session:
-        page = session.fetch(url, wait=8_000)
-        return "".join(Convertor._extract_content(page, mode))
+        wait=8_000,
+    )
