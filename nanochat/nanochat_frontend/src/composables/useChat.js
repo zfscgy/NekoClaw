@@ -110,8 +110,8 @@ function _formatToolCall(item) {
 function _tryConvertMessageToolCall(entry, cid) {
   if (entry.type !== 'tool_call') return null
   const raw = entry.content || ''
-  if (!raw.startsWith('message(')) return null
-  const argsStr = raw.slice('message('.length, raw.endsWith(')') ? -1 : undefined)
+  if (!raw.startsWith('send_message_with_attachments(')) return null
+  const argsStr = raw.slice('send_message_with_attachments('.length, raw.endsWith(')') ? -1 : undefined)
   const args = _safeJsonParse(argsStr)
   if (!args || typeof args !== 'object') return null
   return {
@@ -219,8 +219,24 @@ export function useChat() {
 
   function _handleToolCallDelta(arr, cid, rawContent) {
     let current = _toolCallState.current
-    if (!current || current.complete) {
-      current = { name: '', arguments: '', arrIdx: arr.length, complete: false }
+
+    // Resolve the tool-call id from this chunk so we can aggregate by id rather
+    // than relying on a "complete" flag.  An empty-arguments chunk that parses
+    // as valid JSON may still have more argument deltas incoming (they share the
+    // same id), so we must NOT start a new slot just because the JSON is valid.
+    const parsed = _safeJsonParse(rawContent)
+    const incomingId = parsed
+      ? (parsed.tool_call_id ?? parsed.id ?? null)
+      : _extractToolCallId(rawContent)
+
+    // Start a new slot only when there is no slot yet, or when the incoming chunk
+    // carries a different tool-call id than the in-flight slot.
+    const needNewSlot =
+      !current ||
+      (incomingId != null && current.toolCallId != null && incomingId !== current.toolCallId)
+
+    if (needNewSlot) {
+      current = { name: '', arguments: '', arrIdx: arr.length, toolCallId: incomingId }
       _toolCallState.current = current
       arr.push({ type: 'tool_call', content: _formatToolCall(current), conversation_id: cid })
     }
@@ -233,10 +249,8 @@ export function useChat() {
 
     current.name = delta.name
     current.arguments = delta.arguments
+    if (incomingId != null) current.toolCallId = incomingId
     arr[current.arrIdx] = { ...arr[current.arrIdx], content: _formatToolCall(current) }
-
-    // In-order stream guarantee: once this JSON chunk is complete, next chunk is a new tool call.
-    if (_safeJsonParse(rawContent)) current.complete = true
   }
 
   function _updatePreview(cid, content) {

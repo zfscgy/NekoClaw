@@ -274,7 +274,7 @@ class NanochatChannel(BaseChannel):
                             fn = tc.get("function", {})
                             name = fn.get("name", "tool")
                             args_str = fn.get("arguments", "")
-                            if name == "message":
+                            if name == "send_message_with_attachments":
                                 try:
                                     args = json.loads(args_str)
                                     if isinstance(args, dict) and isinstance(args.get("media"), list):

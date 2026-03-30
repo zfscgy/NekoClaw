@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nanobot.tools.web_search import lightsear_search
+from nanobot.tools.web import lightsear_search
 
 
 def test__search_duckduckgo():

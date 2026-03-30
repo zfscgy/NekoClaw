@@ -14,7 +14,7 @@ export function visibleItems(items) {
   return items.filter(i => {
     if (i.type !== 'tool_call') return true
     const name = (i.content || '').match(/^(\w+)/)?.[1]
-    return name !== 'message'
+    return name !== 'send_message_with_attachments'
   })
 }
 

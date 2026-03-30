@@ -369,7 +369,7 @@ def gateway(
             if isinstance(cron_tool, CronTool) and cron_token is not None:
                 cron_tool.reset_cron_context(cron_token)
 
-        message_tool = agent.tools.get("message")
+        message_tool = agent.tools.get("send_message_with_attachments")
         if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
             return response
 

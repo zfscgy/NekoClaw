@@ -11,7 +11,7 @@ import httpx
 from loguru import logger
 
 from nanobot.agent.tools.base import Tool
-from nanobot.tools.web import lightsear_search, web_fetch
+from nanobot.tools.web import lightsear_search, lightsear_fetch
 
 
 class WebSearchTool(Tool):
@@ -69,7 +69,7 @@ class WebFetchTool(Tool):
 
     async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
         try:
-            content = await asyncio.to_thread(web_fetch, url, extractMode)
+            content = await asyncio.to_thread(lightsear_fetch, url, extractMode)
             if not content:
                 return f"No content for: {url}"
             return content

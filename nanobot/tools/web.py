@@ -22,7 +22,7 @@ def lightsear_search(text: str, max_results: int = web_config.search.max_results
     return results_parsed
 
 
-def web_fetch(url: str, mode: Literal["markdown", "text"] = "markdown") -> str:
+def lightsear_fetch(url: str, mode: Literal["markdown", "text"] = "markdown") -> str:
     return lightsear.web_fetch(
         url,
         mode=mode,

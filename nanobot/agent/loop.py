@@ -149,14 +149,14 @@ class AgentLoop:
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
-        for name in ("message", "spawn", "cron"):
+        for name in ("send_message_with_attachments", "spawn", "cron"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
-                    tool.set_context(channel, chat_id, *([message_id] if name == "message" else []))
+                    tool.set_context(channel, chat_id, *([message_id] if name == "send_message_with_attachments" else []))
 
     def _message_was_sent(self) -> bool:
         """Return True if the message tool fired during this turn."""
-        mt = self.tools.get("message")
+        mt = self.tools.get("send_message_with_attachments")
         return isinstance(mt, MessageTool) and mt._sent_in_turn
 
     @staticmethod
@@ -581,7 +581,7 @@ class AgentLoop:
             self._consolidation_tasks.add(_task)
 
         self._set_tool_context(msg.channel, msg.chat_id, msg.metadata.get("message_id"))
-        if message_tool := self.tools.get("message"):
+        if message_tool := self.tools.get("send_message_with_attachments"):
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
