@@ -218,8 +218,8 @@ export function useChat() {
   }
 
   function _handleToolCallDelta(arr, cid, rawContent) {
+    console.log("_handleToolCallDelta", rawContent)
     let current = _toolCallState.current
-
     // Resolve the tool-call id from this chunk so we can aggregate by id rather
     // than relying on a "complete" flag.  An empty-arguments chunk that parses
     // as valid JSON may still have more argument deltas incoming (they share the
@@ -239,6 +239,22 @@ export function useChat() {
       current = { name: '', arguments: '', arrIdx: arr.length, toolCallId: incomingId }
       _toolCallState.current = current
       arr.push({ type: 'tool_call', content: _formatToolCall(current), conversation_id: cid })
+    }
+
+    if (parsed) {
+      if (parsed.name == 'send_message_with_attachments' && parsed.arguments != "") {
+        const args = _safeJsonParse(parsed.arguments)
+        if (!args || typeof args !== 'object') return null
+        const message = {
+          type: 'content',
+          role: 'assistant',
+          content: args.content || '',
+          media: Array.isArray(args.media) ? args.media : [],
+          conversation_id: cid,
+        }
+        arr.push(message)
+        return
+      }
     }
 
     const delta = _parseStreamingToolCallDelta(rawContent, {
@@ -348,7 +364,11 @@ export function useChat() {
             const fp = converted.role + '\x00' + converted.content
             if (!arr.slice(-20).some(m => m.role === 'assistant' && (m.role + '\x00' + (m.content || '')) === fp))
               arr.push(converted)
-          } else {
+          } else if (!(msg.content || '').startsWith('send_message_with_attachments(')) {
+            // Discard send_message_with_attachments hints whose args are not JSON —
+            // those are live hints (Python repr format) redundant with the streaming
+            // conversion already applied at stream_end.  History-replay entries always
+            // carry raw JSON args and are handled by the converted branch above.
             if (!arr.slice(-20).some(m => m.type === 'tool_call' && (m.content || '') === (msg.content || '')))
               arr.push(msg)
           }
