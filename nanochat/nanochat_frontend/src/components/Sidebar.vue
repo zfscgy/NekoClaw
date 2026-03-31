@@ -56,18 +56,29 @@
   </aside>
 </template>
 
-<script setup>
-defineProps({
-  conversations: { type: Array, required: true },
-  activeId: { type: String, default: null },
-  isDark: { type: Boolean, required: true },
-  isCollapsed: { type: Boolean, default: false },
+<script setup lang="ts">
+import type { Conversation } from '../composables/useChat'
+
+withDefaults(defineProps<{
+  conversations: Conversation[]
+  activeId?: string | null
+  isDark: boolean
+  isCollapsed?: boolean
+}>(), {
+  activeId: null,
+  isCollapsed: false,
 })
 
-const emit = defineEmits(['new', 'select', 'delete', 'toggle-theme', 'toggle-collapse'])
+const emit = defineEmits<{
+  new: []
+  select: [id: string]
+  delete: [id: string]
+  'toggle-theme': []
+  'toggle-collapse': []
+}>()
 
-function newConversation() { emit('new') }
-function selectConversation(id) { emit('select', id) }
-function deleteConversation(id) { emit('delete', id) }
-function toggleTheme() { emit('toggle-theme') }
+function newConversation(): void { emit('new') }
+function selectConversation(id: string): void { emit('select', id) }
+function deleteConversation(id: string): void { emit('delete', id) }
+function toggleTheme(): void { emit('toggle-theme') }
 </script>

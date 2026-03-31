@@ -21,21 +21,25 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 import { renderMarkdown } from '../utils/markdown'
 import { isImage, mediaUrl, fileName } from '../utils/media'
 
-const props = defineProps({
-  role: { type: String, required: true },
-  content: { type: String, default: '' },
-  media: { type: Array, default: () => [] },
-  appendCursor: { type: Boolean, default: false },
+const props = withDefaults(defineProps<{
+  role: string
+  content?: string
+  media?: string[]
+  appendCursor?: boolean
+}>(), {
+  content: '',
+  media: () => [],
+  appendCursor: false,
 })
 
-defineEmits(['lightbox'])
+defineEmits<{ lightbox: [src: string] }>()
 
 const rendered = computed(() =>
-  renderMarkdown(props.content) + (props.appendCursor ? '<span class="streaming-cursor"></span>' : '')
+  renderMarkdown(props.content ?? '') + (props.appendCursor ? '<span class="streaming-cursor"></span>' : '')
 )
 </script>

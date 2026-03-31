@@ -29,18 +29,18 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
-import { toolCallName, toolCallRest, visibleItems, actionGroupLabel } from '../utils/actions'
-import { renderMarkdown } from '../utils/markdown.js'
+import { toolCallName, toolCallRest, visibleItems, actionGroupLabel, type ActionItem } from '../utils/actions'
+import { renderMarkdown } from '../utils/markdown'
 
-const props = defineProps({
-  items: { type: Array, required: true },
-  isOpen: { type: Boolean, required: true },
-  appendCursor: { type: Boolean, default: false },
-})
+const props = defineProps<{
+  items: ActionItem[]
+  isOpen: boolean
+  appendCursor?: boolean
+}>()
 
-const emit = defineEmits(['toggle'])
+defineEmits<{ toggle: [] }>()
 
 const visible = computed(() => visibleItems(props.items))
 const label = computed(() => actionGroupLabel(props.items, visible.value))

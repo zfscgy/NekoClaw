@@ -26,35 +26,41 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, watch } from 'vue'
 
-const props = defineProps({
-  modelValue: { type: String, default: '' },
-  disabled: { type: Boolean, default: false },
+const props = withDefaults(defineProps<{
+  modelValue?: string
+  disabled?: boolean
+}>(), {
+  modelValue: '',
+  disabled: false,
 })
 
-const emit = defineEmits(['update:modelValue', 'send'])
+const emit = defineEmits<{
+  'update:modelValue': [value: string]
+  send: []
+}>()
 
 const model = ref(props.modelValue)
-const inputRef = ref(null)
+const inputRef = ref<HTMLTextAreaElement | null>(null)
 
-watch(() => props.modelValue, v => { model.value = v })
+watch(() => props.modelValue, v => { model.value = v ?? '' })
 watch(model, v => emit('update:modelValue', v))
 watch(() => props.modelValue, v => { if (!v) resetHeight() }, { flush: 'sync' })
 
-function send() {
+function send(): void {
   if (!model.value.trim() || props.disabled) return
   emit('send')
 }
 
-function autoResize(e) {
-  const el = e.target
+function autoResize(e: Event): void {
+  const el = e.target as HTMLTextAreaElement
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 200) + 'px'
 }
 
-function resetHeight() {
+function resetHeight(): void {
   if (inputRef.value) inputRef.value.style.height = 'auto'
 }
 

@@ -1,4 +1,4 @@
-function decodeName(value) {
+function decodeName(value: string): string {
   if (!value) return ''
   let decoded = value
   for (let i = 0; i < 2; i++) {
@@ -13,19 +13,19 @@ function decodeName(value) {
   return decoded
 }
 
-export function isImage(path) {
+export function isImage(path: string): boolean {
   const name = fileName(path)
   return /\.(png|jpe?g|gif|webp|svg|bmp|ico)$/i.test(name)
 }
 
-export function mediaUrl(path) {
+export function mediaUrl(path: string): string {
   if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('data:'))
     return path
   if (path.startsWith('/')) return path
   return '/' + path
 }
 
-export function fileName(path) {
+export function fileName(path: string): string {
   try {
     const u = new URL(path, location.origin)
     const n = u.searchParams.get('name')

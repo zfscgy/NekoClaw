@@ -65,7 +65,7 @@
   </div>
 </template>
 
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ActionGroup from './components/ActionGroup.vue'
@@ -73,8 +73,8 @@ import MessageBubble from './components/MessageBubble.vue'
 import ChatInput from './components/ChatInput.vue'
 import EmptyState from './components/EmptyState.vue'
 import Lightbox from './components/Lightbox.vue'
-import { useTheme } from './composables/useTheme.js'
-import { useChat } from './composables/useChat.js'
+import { useTheme } from './composables/useTheme'
+import { useChat } from './composables/useChat'
 
 const { isDark, toggleTheme } = useTheme()
 

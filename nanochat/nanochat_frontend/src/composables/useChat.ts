@@ -1,8 +1,86 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 
-const WS_STATUS = { connected: 'Connected', connecting: 'Connecting…', disconnected: 'Disconnected' }
+// ── Types ──────────────────────────────────────────────────────────
 
-function _safeJsonParse(value) {
+type WsStatusKey = 'connected' | 'connecting' | 'disconnected'
+
+const WS_STATUS: Record<WsStatusKey, string> = {
+  connected: 'Connected',
+  connecting: 'Connecting…',
+  disconnected: 'Disconnected',
+}
+
+export interface Conversation {
+  id: string
+  preview: string
+}
+
+export interface ChatMessage {
+  type: 'content' | 'think' | 'tool_call' | 'reasoning_response'
+  role?: string
+  content?: string
+  media?: string[]
+  conversation_id?: string
+  _replay?: boolean
+}
+
+interface ToolCallSlot {
+  name: string
+  arguments: string
+  arrIdx: number
+  toolCallId: string | null
+}
+
+interface ToolCallState {
+  current: ToolCallSlot | null
+}
+
+interface NormalizedToolCall {
+  index: number
+  name: string
+  arguments: string
+  toolCallId: string
+}
+
+interface ParsedToolCallDelta {
+  index: number
+  name: string
+  arguments: string
+}
+
+export interface ContentGroup {
+  type: 'content'
+  role?: string
+  content?: string
+  media: string[]
+  appendCursor?: boolean
+}
+
+export interface ActionsGroup {
+  type: 'actions'
+  items: ChatMessage[]
+  key: string
+  appendCursor?: boolean
+}
+
+export type MessageGroup = ContentGroup | ActionsGroup
+
+// Discriminated union for incoming WebSocket messages
+type WsMessage =
+  | { type: 'stream_start'; conversation_id?: string }
+  | { type: 'stream_end'; conversation_id?: string }
+  | { type: 'stream_content_delta'; role?: string; content?: string; conversation_id?: string }
+  | { type: 'stream_think_delta'; content?: string; conversation_id?: string }
+  | { type: 'stream_tool_call_delta'; content: string; conversation_id?: string }
+  | { type: 'content'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
+  | { type: 'think'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
+  | { type: 'tool_call'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
+  | { type: string; conversation_id?: string }
+
+// ── Private helpers ────────────────────────────────────────────────
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function _safeJsonParse(value: string): any {
   try {
     return JSON.parse(value)
   } catch {
@@ -10,7 +88,7 @@ function _safeJsonParse(value) {
   }
 }
 
-function _extractPartialStringField(raw, key) {
+function _extractPartialStringField(raw: string, key: string): string | null {
   if (!raw || typeof raw !== 'string') return null
   const marker = `"${key}":`
   const start = raw.indexOf(marker)
@@ -43,13 +121,13 @@ function _extractPartialStringField(raw, key) {
   return out
 }
 
-function _extractPartialNumberField(raw, key) {
+function _extractPartialNumberField(raw: string, key: string): number | null {
   if (!raw || typeof raw !== 'string') return null
   const match = raw.match(new RegExp(`"${key}"\\s*:\\s*(\\d+)`))
   return match ? Number(match[1]) : null
 }
 
-function _stringifyToolArguments(value) {
+function _stringifyToolArguments(value: unknown): string {
   if (value == null) return ''
   if (typeof value === 'string') return value
   try {
@@ -59,25 +137,31 @@ function _stringifyToolArguments(value) {
   }
 }
 
-function _extractToolCallId(rawContent) {
-  return _extractPartialStringField(rawContent, 'id')
-    ?? null
+function _extractToolCallId(rawContent: string): string | null {
+  return _extractPartialStringField(rawContent, 'id') ?? null
 }
 
-function _normalizeToolCallPayload(payload, previous) {
+function _normalizeToolCallPayload(
+  payload: unknown,
+  previous: Partial<NormalizedToolCall> | null,
+): NormalizedToolCall | null {
   if (!payload || typeof payload !== 'object') return null
 
-  const candidate = Array.isArray(payload)
-    ? payload.find(item => item && typeof item === 'object')
-    : payload
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const obj = payload as any
+  const candidate = Array.isArray(obj)
+    ? (obj as unknown[]).find(item => item && typeof item === 'object')
+    : obj
 
   if (!candidate || typeof candidate !== 'object') return null
 
-  const fn = candidate.function && typeof candidate.function === 'object' ? candidate.function : null
-  const rawName = candidate.name ?? fn?.name ?? previous?.name ?? ''
-  const rawArguments = candidate.arguments ?? fn?.arguments ?? previous?.arguments ?? ''
-  const rawIndex = candidate.index ?? previous?.index ?? 0
-  const rawToolCallId = candidate.tool_call_id ?? candidate.id ?? previous?.toolCallId ?? ''
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c = candidate as Record<string, any>
+  const fn = c.function && typeof c.function === 'object' ? c.function : null
+  const rawName = c.name ?? fn?.name ?? previous?.name ?? ''
+  const rawArguments = c.arguments ?? fn?.arguments ?? previous?.arguments ?? ''
+  const rawIndex = c.index ?? previous?.index ?? 0
+  const rawToolCallId = c.tool_call_id ?? c.id ?? previous?.toolCallId ?? ''
 
   return {
     index: Number.isFinite(Number(rawIndex)) ? Number(rawIndex) : (previous?.index ?? 0),
@@ -87,7 +171,10 @@ function _normalizeToolCallPayload(payload, previous) {
   }
 }
 
-function _parseStreamingToolCallDelta(rawContent, previous) {
+function _parseStreamingToolCallDelta(
+  rawContent: string,
+  previous: Partial<NormalizedToolCall> | null,
+): ParsedToolCallDelta {
   const parsed = _safeJsonParse(rawContent)
   const normalized = _normalizeToolCallPayload(parsed, previous)
   if (normalized) return normalized
@@ -103,11 +190,11 @@ function _parseStreamingToolCallDelta(rawContent, previous) {
   }
 }
 
-function _formatToolCall(item) {
+function _formatToolCall(item: Pick<ToolCallSlot, 'name' | 'arguments'>): string {
   return `${item.name || 'tool'}(${item.arguments || ''})`
 }
 
-function _tryConvertMessageToolCall(entry, cid) {
+function _tryConvertMessageToolCall(entry: ChatMessage, cid: string): ChatMessage | null {
   if (entry.type !== 'tool_call') return null
   const raw = entry.content || ''
   if (!raw.startsWith('send_message_with_attachments(')) return null
@@ -123,49 +210,50 @@ function _tryConvertMessageToolCall(entry, cid) {
   }
 }
 
+// ── Composable ─────────────────────────────────────────────────────
+
 export function useChat() {
-  const conversations = ref([])
-  const activeId = ref(null)
-  const messagesByConv = ref({})
+  const conversations = ref<Conversation[]>([])
+  const activeId = ref<string | null>(null)
+  const messagesByConv = ref<Record<string, ChatMessage[]>>({})
   const inputText = ref('')
   const isTyping = ref(false)
   const isStreaming = ref(false)
-  const wsStatus = ref('disconnected')
-  const lightboxSrc = ref(null)
-  const messagesEl = ref(null)
-  const groupOpenState = ref({})
+  const wsStatus = ref<WsStatusKey>('disconnected')
+  const lightboxSrc = ref<string | null>(null)
+  const messagesEl = ref<HTMLElement | null>(null)
+  const groupOpenState = ref<Record<string, boolean>>({})
 
   const wsStatusLabel = computed(() => WS_STATUS[wsStatus.value])
 
-  const currentMessages = computed(() =>
+  const currentMessages = computed<ChatMessage[]>(() =>
     activeId.value ? (messagesByConv.value[activeId.value] || []) : []
   )
 
-  let ws = null
-  let wsReconnectTimer = null
+  let ws: WebSocket | null = null
+  let wsReconnectTimer: number | undefined
   let wsGeneration = 0
-  const _openCache = {}
+  const _openCache: Record<string, boolean> = {}
 
-  // Per-round streaming state (reset on stream_start / stream_end)
-  let _toolCallState = { current: null }
+  let _toolCallState: ToolCallState = { current: null }
   let _roundStart = 0
 
-  function setGroupOpen(key, val) {
+  function setGroupOpen(key: string, val: boolean): void {
     _openCache[key] = val
     groupOpenState.value = { ...groupOpenState.value, [key]: val }
   }
 
-  const messageGroups = computed(() => {
+  const messageGroups = computed<MessageGroup[]>(() => {
     const msgs = currentMessages.value
-    const groups = []
-    const pendingOpen = {}
+    const groups: MessageGroup[] = []
+    const pendingOpen: Record<string, boolean> = {}
     let i = 0
 
     while (i < msgs.length) {
       const m = msgs[i]
 
       if (m.type === 'tool_call' || m.type === 'think' || m.type === 'reasoning_response') {
-        const items = []
+        const items: ChatMessage[] = []
         while (i < msgs.length && (msgs[i].type === 'tool_call' || msgs[i].type === 'think' || msgs[i].type === 'reasoning_response')) {
           items.push(msgs[i])
           i++
@@ -205,32 +293,26 @@ export function useChat() {
 
   // ── Streaming helpers ──────────────────────────────────────────────
 
-  function _appendStreamText(arr, type, role, text) {
+  function _appendStreamText(arr: ChatMessage[], type: ChatMessage['type'], role: string | undefined, text: string): void {
     if (!text) return
     const last = arr.length ? arr[arr.length - 1] : null
     if (last && last.type === type && (!role || last.role === role)) {
       arr[arr.length - 1] = { ...last, content: (last.content || '') + text }
     } else {
-      const entry = { type, content: text }
+      const entry: ChatMessage = { type, content: text }
       if (role) entry.role = role
       arr.push(entry)
     }
   }
 
-  function _handleToolCallDelta(arr, cid, rawContent) {
+  function _handleToolCallDelta(arr: ChatMessage[], cid: string, rawContent: string): void {
     console.log("_handleToolCallDelta", rawContent)
     let current = _toolCallState.current
-    // Resolve the tool-call id from this chunk so we can aggregate by id rather
-    // than relying on a "complete" flag.  An empty-arguments chunk that parses
-    // as valid JSON may still have more argument deltas incoming (they share the
-    // same id), so we must NOT start a new slot just because the JSON is valid.
     const parsed = _safeJsonParse(rawContent)
-    const incomingId = parsed
+    const incomingId: string | null = parsed
       ? (parsed.tool_call_id ?? parsed.id ?? null)
       : _extractToolCallId(rawContent)
 
-    // Start a new slot only when there is no slot yet, or when the incoming chunk
-    // carries a different tool-call id than the in-flight slot.
     const needNewSlot =
       !current ||
       (incomingId != null && current.toolCallId != null && incomingId !== current.toolCallId)
@@ -244,8 +326,8 @@ export function useChat() {
     if (parsed) {
       if (parsed.name == 'send_message_with_attachments' && parsed.arguments != "") {
         const args = _safeJsonParse(parsed.arguments)
-        if (!args || typeof args !== 'object') return null
-        const message = {
+        if (!args || typeof args !== 'object') return
+        const message: ChatMessage = {
           type: 'content',
           role: 'assistant',
           content: args.content || '',
@@ -258,25 +340,25 @@ export function useChat() {
     }
 
     const delta = _parseStreamingToolCallDelta(rawContent, {
-      name: current.name,
-      arguments: current.arguments,
+      name: current!.name,
+      arguments: current!.arguments,
       index: 0,
     })
 
-    current.name = delta.name
-    current.arguments = delta.arguments
-    if (incomingId != null) current.toolCallId = incomingId
-    arr[current.arrIdx] = { ...arr[current.arrIdx], content: _formatToolCall(current) }
+    current!.name = delta.name
+    current!.arguments = delta.arguments
+    if (incomingId != null) current!.toolCallId = incomingId
+    arr[current!.arrIdx] = { ...arr[current!.arrIdx], content: _formatToolCall(current!) }
   }
 
-  function _updatePreview(cid, content) {
+  function _updatePreview(cid: string, content: string | undefined): void {
     const c = conversations.value.find(c => c.id === cid)
     if (c) c.preview = (content || '').slice(0, 80)
   }
 
   // ── WebSocket ──────────────────────────────────────────────────────
 
-  function _closeWs() {
+  function _closeWs(): void {
     wsGeneration++
     clearTimeout(wsReconnectTimer)
     if (ws) {
@@ -287,7 +369,7 @@ export function useChat() {
     isStreaming.value = false
   }
 
-  function connectWs(convId) {
+  function connectWs(convId: string): void {
     _closeWs()
     if (!convId) return
     const myGen = wsGeneration
@@ -300,9 +382,9 @@ export function useChat() {
       wsStatus.value = 'connected'
     }
 
-    ws.onmessage = (ev) => {
+    ws.onmessage = (ev: MessageEvent) => {
       if (wsGeneration !== myGen) return
-      const msg = JSON.parse(ev.data)
+      const msg = JSON.parse(ev.data as string) as WsMessage
       const cid = msg.conversation_id || convId
       if (!messagesByConv.value[cid]) messagesByConv.value[cid] = []
       const arr = messagesByConv.value[cid]
@@ -322,7 +404,7 @@ export function useChat() {
 
         case 'stream_think_delta':
           isStreaming.value = true
-          _appendStreamText(arr, 'think', null, msg.content || '')
+          _appendStreamText(arr, 'think', undefined, msg.content || '')
           break
 
         case 'stream_tool_call_delta':
@@ -348,29 +430,25 @@ export function useChat() {
           const fp = msg.role + '\x00' + (msg.content || '')
           const isDup = arr.slice(-20).some(m => m.role === msg.role && (m.role + '\x00' + (m.content || '')) === fp)
           if (!isDup) {
-            arr.push(msg)
+            arr.push(msg as ChatMessage)
             _updatePreview(cid, msg.content)
           }
           break
         }
 
         case 'think':
-          arr.push(msg)
+          arr.push(msg as ChatMessage)
           break
 
         case 'tool_call': {
-          const converted = _tryConvertMessageToolCall(msg, cid)
+          const converted = _tryConvertMessageToolCall(msg as ChatMessage, cid)
           if (converted) {
             const fp = converted.role + '\x00' + converted.content
             if (!arr.slice(-20).some(m => m.role === 'assistant' && (m.role + '\x00' + (m.content || '')) === fp))
               arr.push(converted)
-          } else if (!(msg.content || '').startsWith('send_message_with_attachments(')) {
-            // Discard send_message_with_attachments hints whose args are not JSON —
-            // those are live hints (Python repr format) redundant with the streaming
-            // conversion already applied at stream_end.  History-replay entries always
-            // carry raw JSON args and are handled by the converted branch above.
-            if (!arr.slice(-20).some(m => m.type === 'tool_call' && (m.content || '') === (msg.content || '')))
-              arr.push(msg)
+          } else if (!(msg.content && (msg as ChatMessage).content?.startsWith('send_message_with_attachments('))) {
+            if (!arr.slice(-20).some(m => m.type === 'tool_call' && (m.content || '') === ((msg as ChatMessage).content || '')))
+              arr.push(msg as ChatMessage)
           }
           break
         }
@@ -385,7 +463,7 @@ export function useChat() {
       wsStatus.value = 'disconnected'
       isTyping.value = false
       isStreaming.value = false
-      wsReconnectTimer = setTimeout(() => {
+      wsReconnectTimer = window.setTimeout(() => {
         if (wsGeneration === myGen && activeId.value === convId) {
           messagesByConv.value[convId] = []
           for (const k of Object.keys(_openCache)) delete _openCache[k]
@@ -403,20 +481,20 @@ export function useChat() {
     }
   }
 
-  async function newConversation() {
+  async function newConversation(): Promise<void> {
     const res = await fetch('/api/conversations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
     })
-    const data = await res.json()
+    const data = await res.json() as { conversation_id: string }
     const cid = data.conversation_id
     conversations.value.unshift({ id: cid, preview: '' })
     messagesByConv.value[cid] = []
     selectConversation(cid)
   }
 
-  function selectConversation(id) {
+  function selectConversation(id: string): void {
     activeId.value = id
     isTyping.value = false
     isStreaming.value = false
@@ -427,7 +505,7 @@ export function useChat() {
     nextTick(scrollToBottom)
   }
 
-  async function deleteConversation(id) {
+  async function deleteConversation(id: string): Promise<void> {
     try {
       await fetch(`/api/conversations/${id}`, { method: 'DELETE' })
     } catch (_) {}
@@ -439,7 +517,7 @@ export function useChat() {
     }
   }
 
-  async function sendMessage() {
+  async function sendMessage(): Promise<void> {
     const text = inputText.value.trim()
     if (!text || !activeId.value || isTyping.value) return
 
@@ -476,7 +554,7 @@ export function useChat() {
     }
   }
 
-  async function sendCommand(cmd) {
+  async function sendCommand(cmd: string): Promise<void> {
     if (!activeId.value) return
     isTyping.value = true
     const cid = activeId.value
@@ -495,23 +573,23 @@ export function useChat() {
     }
   }
 
-  function scrollToBottom() {
+  function scrollToBottom(): void {
     nextTick(() => {
       if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
     })
   }
 
-  function autoResize(e) {
-    const el = e.target
+  function autoResize(e: Event): void {
+    const el = e.target as HTMLTextAreaElement
     el.style.height = 'auto'
     el.style.height = Math.min(el.scrollHeight, 200) + 'px'
   }
 
-  function openLightbox(src) {
+  function openLightbox(src: string): void {
     lightboxSrc.value = src
   }
 
-  function onKeydown(e) {
+  function onKeydown(e: KeyboardEvent): void {
     if (e.key === 'Escape') lightboxSrc.value = null
   }
 
@@ -519,13 +597,14 @@ export function useChat() {
     window.addEventListener('keydown', onKeydown)
     try {
       const res = await fetch('/api/conversations')
-      const data = await res.json()
+      const data = await res.json() as { conversations?: Array<{ id: string; last_message?: string }> }
       conversations.value = (data.conversations || []).map(c => ({
         id: c.id,
         preview: c.last_message || '',
       }))
     } catch (_) {}
   })
+
   onUnmounted(() => {
     window.removeEventListener('keydown', onKeydown)
     _closeWs()

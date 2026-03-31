@@ -4,10 +4,10 @@ import markedKatex from 'marked-katex-extension'
 
 marked.use(markedKatex({ throwOnError: false, nonStandard: true }))
 
-export function renderMarkdown(text) {
+export function renderMarkdown(text: string): string {
   if (!text) return ''
   try {
-    return DOMPurify.sanitize(marked.parse(text), {
+    return DOMPurify.sanitize(marked.parse(text) as string, {
       USE_PROFILES: { html: true, mathMl: true },
     })
   } catch {

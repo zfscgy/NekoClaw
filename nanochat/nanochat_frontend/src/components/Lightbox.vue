@@ -4,7 +4,7 @@
   </div>
 </template>
 
-<script setup>
-defineProps({ src: { type: String, default: null } })
-defineEmits(['close'])
+<script setup lang="ts">
+withDefaults(defineProps<{ src?: string | null }>(), { src: null })
+defineEmits<{ close: [] }>()
 </script>

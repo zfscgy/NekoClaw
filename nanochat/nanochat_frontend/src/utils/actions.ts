@@ -1,16 +1,21 @@
-export function toolCallName(content) {
+export interface ActionItem {
+  type: string
+  content?: string
+}
+
+export function toolCallName(content: string): string {
   if (!content || typeof content !== 'string') return 'tool'
   const idx = content.indexOf('(')
   return idx >= 0 ? content.slice(0, idx) : content
 }
 
-export function toolCallRest(content) {
+export function toolCallRest(content: string): string {
   if (!content || typeof content !== 'string') return ''
   const idx = content.indexOf('(')
   return idx >= 0 ? content.slice(idx) : ''
 }
 
-export function visibleItems(items) {
+export function visibleItems(items: ActionItem[]): ActionItem[] {
   return items.filter(i => {
     if (i.type !== 'tool_call') return true
     const name = (i.content || '').match(/^(\w+)/)?.[1]
@@ -18,11 +23,11 @@ export function visibleItems(items) {
   })
 }
 
-export function actionGroupLabel(items, visible) {
+export function actionGroupLabel(items: ActionItem[], visible: ActionItem[]): string {
   const tools = visible.filter(i => i.type === 'tool_call')
   const hasResponse = visible.some(i => i.type === 'reasoning_response')
   if (tools.length) {
-    const names = tools.map(i => toolCallName(i.content))
+    const names = tools.map(i => toolCallName(i.content ?? ''))
     return names.length === 1 ? `Used ${names[0]}` : `Used ${names.join(', ')}`
   }
   return hasResponse ? 'Reasoned' : 'Thinking'
