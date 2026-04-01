@@ -17,6 +17,9 @@
           </a>
         </template>
       </div>
+      <span v-if="streamStatus" class="stream-status-icon bubble-status" :class="streamStatus">
+        <template v-if="streamStatus === 'complete'">✓</template>
+      </span>
     </div>
   </div>
 </template>
@@ -25,16 +28,19 @@
 import { computed } from 'vue'
 import { renderMarkdown } from '../utils/markdown'
 import { isImage, mediaUrl, fileName } from '../utils/media'
+import type { StreamStatus } from '../composables/useChat'
 
 const props = withDefaults(defineProps<{
   role: string
   content?: string
   media?: string[]
   appendCursor?: boolean
+  streamStatus?: StreamStatus
 }>(), {
   content: '',
   media: () => [],
   appendCursor: false,
+  streamStatus: undefined,
 })
 
 defineEmits<{ lightbox: [src: string] }>()

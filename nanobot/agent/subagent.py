@@ -14,7 +14,6 @@ from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
-from nanobot.config.schema import ExecToolConfig
 from nanobot.providers.base import LLMProvider, parse_stream_deltas
 
 
@@ -31,10 +30,8 @@ class SubagentManager:
         max_tokens: int = 4096,
         reasoning_effort: str | None = None,
         web_proxy: str | None = None,
-        exec_config: "ExecToolConfig | None" = None,
         restrict_to_workspace: bool = False,
     ):
-        from nanobot.config.schema import ExecToolConfig
         self.provider = provider
         self.workspace = workspace
         self.bus = bus
@@ -43,7 +40,6 @@ class SubagentManager:
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
         self.web_proxy = web_proxy
-        self.exec_config = exec_config or ExecToolConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
@@ -98,12 +94,7 @@ class SubagentManager:
             tools.register(WriteFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
             tools.register(EditFileTool(workspace=self.workspace, allowed_dir=allowed_dir))
             tools.register(ListDirTool(workspace=self.workspace, allowed_dir=allowed_dir))
-            tools.register(ExecTool(
-                working_dir=str(self.workspace),
-                timeout=self.exec_config.timeout,
-                restrict_to_workspace=self.restrict_to_workspace,
-                path_append=self.exec_config.path_append,
-            ))
+            tools.register(ExecTool(working_dir=str(self.workspace)))
             tools.register(WebSearchTool())
             tools.register(WebFetchTool(proxy=self.web_proxy))
             

@@ -1,9 +1,5 @@
 """Tests for nanobot.tools.web_search.search_duckduckgo."""
 
-from unittest.mock import MagicMock, patch
-
-import pytest
-
 from nanobot.tools.web import lightsear_search
 
 

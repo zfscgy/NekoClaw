@@ -27,33 +27,16 @@ def test_web_fetch_uses_session_pool_and_markdownify(monkeypatch: pytest.MonkeyP
             value = fn(FakeSession(), *args, **kwargs)
             return FakeFuture(value)
 
-    def fake_get_pool(**kwargs):
-        calls["pool_kwargs"] = kwargs
-        return FakePool()
-
     def fake_markdownify(page: str):
         calls["markdownify"] = page
         return "hello world"
 
-    monkeypatch.setattr(lightsear, "_get_persistent_pool", fake_get_pool)
+    monkeypatch.setattr(lightsear, "_pool", FakePool())
     monkeypatch.setitem(sys.modules, "markdownify", types.SimpleNamespace(markdownify=fake_markdownify))
 
-    content = lightsear.web_fetch(
-        "https://example.com",
-        mode="markdown",
-        timeout=12.5,
-        proxy="http://127.0.0.1:7890",
-        wait=1234,
-    )
+    content = lightsear.web_fetch("https://example.com", mode="markdown", wait=1234)
 
     assert content == "hello world"
-    assert calls["pool_kwargs"] == {
-        "size": 1,
-        "timeout": 12.5,
-        "remote_debug_port": 9222,
-        "proxy": "http://127.0.0.1:7890",
-        "headless": True,
-    }
     assert calls["submit"] == {"fn": "_run_web_fetch", "args": ("https://example.com", 1234), "kwargs": {}}
     assert calls["fetch"] == {"url": "https://example.com", "wait": 1234}
     assert "<h1>mock page</h1>" in calls["markdownify"]
@@ -82,7 +65,7 @@ def test_web_fetch_text_removes_css_and_js(monkeypatch: pytest.MonkeyPatch):
             value = fn(FakeSession(), *args, **kwargs)
             return FakeFuture(value)
 
-    monkeypatch.setattr(lightsear, "_get_persistent_pool", lambda **kwargs: FakePool())
+    monkeypatch.setattr(lightsear, "_pool", FakePool())
 
     content = lightsear.web_fetch("https://example.com", mode="text")
 
@@ -94,4 +77,10 @@ def test_web_fetch_text_removes_css_and_js(monkeypatch: pytest.MonkeyPatch):
 
 def test_web_fetch_rejects_unknown_mode():
     with pytest.raises(ValueError, match="mode must be 'markdown' or 'text'"):
-        lightsear.web_fetch("https://example.com", mode="html")
+        lightsear.web_fetch("https://example.com", mode="html")  # type: ignore[arg-type]
+
+
+def test_web_fetch_requires_pool_init(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(lightsear, "_pool", None)
+    with pytest.raises(RuntimeError, match="initialize_pool"):
+        lightsear.web_fetch("https://example.com")

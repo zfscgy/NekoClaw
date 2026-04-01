@@ -29,6 +29,7 @@
                   :items="group.items"
                   :is-open="groupOpenState[group.key]"
                   :append-cursor="group.appendCursor"
+                  :stream-status="group.streamStatus"
                   @toggle="setGroupOpen(group.key, $event)"
                 />
                 <MessageBubble
@@ -37,6 +38,7 @@
                   :content="group.content"
                   :media="group.media"
                   :append-cursor="group.appendCursor"
+                  :stream-status="group.streamStatus"
                   @lightbox="openLightbox"
                 />
               </template>

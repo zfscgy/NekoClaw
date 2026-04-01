@@ -3,31 +3,28 @@ from typing import Literal
 import lightsear
 
 from nanobot.config import load_config
-web_config = load_config().tools.web
+
+_web_config = load_config().tools.web
+
+if _web_config.chrome_executable_path and _web_config.user_data_dir:
+    lightsear.initialize_pool(
+        chrome_executable_path=_web_config.chrome_executable_path,
+        user_data_dir=_web_config.user_data_dir,
+        proxy=_web_config.proxy,
+    )
 
 
-def lightsear_search(text: str, max_results: int = web_config.search.max_results) -> list[dict[str, str]]:
+def lightsear_search(text: str, max_results: int = _web_config.search.max_results) -> list[dict[str, str]]:
     """Return up to max_results search results for the given text.
 
     Each result is a dict with keys: title, url, body, source.
     """
-    results = lightsear.search(text, proxy=web_config.proxy)
-    results_parsed = [{
-        "title": r.title,
-        "body": r.content,
-        "url": r.url,
-        "source": r.sources
-    } for r in results[:max_results]]
-
-    return results_parsed
+    results = lightsear.search(text)
+    return [
+        {"title": r.title, "body": r.content, "url": r.url, "source": r.sources}
+        for r in results[:max_results]
+    ]
 
 
 def lightsear_fetch(url: str, mode: Literal["markdown", "text"] = "markdown") -> str:
-    return lightsear.web_fetch(
-        url,
-        mode=mode,
-        timeout=30.0,
-        proxy=web_config.proxy,
-        headless=True,
-        wait=8_000,
-    )
+    return lightsear.web_fetch(url, mode=mode)

@@ -48,12 +48,15 @@ interface ParsedToolCallDelta {
   arguments: string
 }
 
+export type StreamStatus = 'generating' | 'complete'
+
 export interface ContentGroup {
   type: 'content'
   role?: string
   content?: string
   media: string[]
   appendCursor?: boolean
+  streamStatus?: StreamStatus
 }
 
 export interface ActionsGroup {
@@ -61,6 +64,7 @@ export interface ActionsGroup {
   items: ChatMessage[]
   key: string
   appendCursor?: boolean
+  streamStatus?: StreamStatus
 }
 
 export type MessageGroup = ContentGroup | ActionsGroup
@@ -219,6 +223,7 @@ export function useChat() {
   const inputText = ref('')
   const isTyping = ref(false)
   const isStreaming = ref(false)
+  const streamDone = ref(false)
   const wsStatus = ref<WsStatusKey>('disconnected')
   const lightboxSrc = ref<string | null>(null)
   const messagesEl = ref<HTMLElement | null>(null)
@@ -277,6 +282,15 @@ export function useChat() {
 
     if (isStreaming.value && groups.length) {
       groups[groups.length - 1] = { ...groups[groups.length - 1], appendCursor: true }
+    }
+
+    const streamStatus: StreamStatus | undefined = isStreaming.value
+      ? 'generating'
+      : streamDone.value
+        ? 'complete'
+        : undefined
+    if (streamStatus && groups.length) {
+      groups[groups.length - 1] = { ...groups[groups.length - 1], streamStatus }
     }
 
     if (Object.keys(pendingOpen).length) {
@@ -393,6 +407,7 @@ export function useChat() {
         case 'stream_start':
           isTyping.value = false
           isStreaming.value = false
+          streamDone.value = false
           _toolCallState = { current: null }
           _roundStart = arr.length
           break
@@ -418,6 +433,7 @@ export function useChat() {
             if (converted) arr[i] = converted
           }
           isStreaming.value = false
+          streamDone.value = true
           _toolCallState = { current: null }
           _roundStart = arr.length
           break
@@ -463,6 +479,7 @@ export function useChat() {
       wsStatus.value = 'disconnected'
       isTyping.value = false
       isStreaming.value = false
+      streamDone.value = false
       wsReconnectTimer = window.setTimeout(() => {
         if (wsGeneration === myGen && activeId.value === convId) {
           messagesByConv.value[convId] = []
@@ -478,6 +495,7 @@ export function useChat() {
       wsStatus.value = 'disconnected'
       isTyping.value = false
       isStreaming.value = false
+      streamDone.value = false
     }
   }
 
@@ -529,6 +547,7 @@ export function useChat() {
 
     inputText.value = ''
     isTyping.value = true
+    streamDone.value = false
 
     const cid = activeId.value
     messagesByConv.value[cid].push({
@@ -557,6 +576,7 @@ export function useChat() {
   async function sendCommand(cmd: string): Promise<void> {
     if (!activeId.value) return
     isTyping.value = true
+    streamDone.value = false
     const cid = activeId.value
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'command', command: cmd }))
@@ -616,6 +636,7 @@ export function useChat() {
     inputText,
     isTyping,
     isStreaming,
+    streamDone,
     wsStatus,
     wsStatusLabel,
     lightboxSrc,

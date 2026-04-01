@@ -579,6 +579,43 @@ html, body {
 }
 @keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
+/* Stream status icon — generating spinner / complete checkmark */
+.stream-status-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+}
+.stream-status-icon.generating {
+  border: 2px solid rgba(88, 166, 255, 0.22);
+  border-top-color: var(--accent);
+  animation: stream-spin 0.75s linear infinite;
+}
+.stream-status-icon.complete {
+  background: var(--green);
+  color: #fff;
+}
+html.light .stream-status-icon.generating {
+  border-color: rgba(9, 105, 218, 0.18);
+  border-top-color: var(--accent);
+}
+@keyframes stream-spin { to { transform: rotate(360deg); } }
+
+/* Positioned at bottom-right corner of the message bubble */
+.msg-bubble .bubble-status {
+  position: absolute;
+  bottom: -7px;
+  right: -7px;
+  box-shadow: 0 0 0 2px var(--sidebar-bg);
+}
+
 .btn-theme {
   background: none;
   border: 1px solid var(--border);

@@ -3,12 +3,14 @@ from lightsear.playwright_client import PlaywrightCDPSession
 
 PROXY = "http://127.0.0.1:10808"
 TIMEOUT_MS = 30_000
-REMOTE_DEBUG_PORT = 9222
+CHROME_EXECUTABLE_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+USER_DATA_DIR = r"C:\tmp\lightsear-profile-baidu"
 
 
 def test_search_baidu():
     with PlaywrightCDPSession(
-        remote_debug_port=REMOTE_DEBUG_PORT,
+        chrome_executable_path=CHROME_EXECUTABLE_PATH,
+        user_data_dir=USER_DATA_DIR,
         timeout=TIMEOUT_MS,
         proxy=PROXY,
         headless=True,

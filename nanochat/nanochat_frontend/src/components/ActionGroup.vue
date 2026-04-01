@@ -10,6 +10,9 @@
         <span>{{ isOpen ? 'Actions' : label }}</span>
         <span class="step-count">{{ visible.length }} step{{ visible.length === 1 ? '' : 's' }}</span>
         <span v-if="appendCursor" class="streaming-cursor"></span>
+        <span v-if="streamStatus" class="stream-status-icon" :class="streamStatus">
+          <template v-if="streamStatus === 'complete'">✓</template>
+        </span>
       </summary>
       <div class="action-items">
         <div
@@ -33,11 +36,13 @@
 import { computed } from 'vue'
 import { toolCallName, toolCallRest, visibleItems, actionGroupLabel, type ActionItem } from '../utils/actions'
 import { renderMarkdown } from '../utils/markdown'
+import type { StreamStatus } from '../composables/useChat'
 
 const props = defineProps<{
   items: ActionItem[]
   isOpen: boolean
   appendCursor?: boolean
+  streamStatus?: StreamStatus
 }>()
 
 defineEmits<{ toggle: [] }>()

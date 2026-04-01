@@ -368,16 +368,60 @@ class NanochatChannel(BaseChannel):
             self._cur_round.pop(conversation_id, None)
             return
 
+        is_stream_end_signal = bool(msg.metadata.get("_stream_end"))
+        if is_stream_end_signal:
+            # The agent finished streaming plain content (no message tool); the
+            # content was already delivered token-by-token.  Clear replay state
+            # and flush the frontend's live panel with a stream_end.
+            self._active_streams.discard(conversation_id)
+            self._stream_segments.pop(conversation_id, None)
+            self._cur_round.pop(conversation_id, None)
+            await self._broadcast(conversation_id, {
+                "type": "stream_end",
+                "conversation_id": conversation_id,
+            })
+            return
+
         if is_stream_tool_delta:
             # Preserve tool-call deltas in exact arrival order for reconnect replay.
             # This avoids index-based collisions across rounds/chunks.
             cur = self._cur_round.setdefault(conversation_id, {})
             self._append_cur_round_tool_delta_item(cur, msg.content)
+
+            # If the delta JSON is complete and is a send_message_with_attachments
+            # call, convert local media paths to /file/{token} URLs before forwarding
+            # so the frontend can render previews/download links immediately.
+            # A fully parseable delta also signals the end of the streaming round.
+            broadcast_content = msg.content
+            is_complete_message_tool = False
+            try:
+                delta = json.loads(msg.content)
+                if (
+                    isinstance(delta, dict)
+                    and delta.get("name") == "send_message_with_attachments"
+                ):
+                    args = json.loads(delta.get("arguments", "{}"))
+                    if isinstance(args, dict):
+                        is_complete_message_tool = True
+                        if isinstance(args.get("media"), list):
+                            args = dict(args)
+                            args["media"] = self._media_to_urls(args["media"])
+                            delta = dict(delta)
+                            delta["arguments"] = json.dumps(args, ensure_ascii=False)
+                            broadcast_content = json.dumps(delta, ensure_ascii=False)
+            except Exception:
+                pass
+
             await self._broadcast(conversation_id, {
                 "type": "stream_tool_call_delta",
-                "content": msg.content,
+                "content": broadcast_content,
                 "conversation_id": conversation_id,
             })
+            if is_complete_message_tool:
+                await self._broadcast(conversation_id, {
+                    "type": "stream_end",
+                    "conversation_id": conversation_id,
+                })
             return
 
         if is_stream_think:

@@ -28,7 +28,7 @@ from nanobot.providers.base import LLMProvider, StreamDelta, ToolCallRequest, is
 from nanobot.session.manager import Session, SessionManager
 
 if TYPE_CHECKING:
-    from nanobot.config.schema import ChannelsConfig, ExecToolConfig
+    from nanobot.config.schema import ChannelsConfig
     from nanobot.cron.service import CronService
 
 
@@ -56,14 +56,12 @@ class AgentLoop:
         memory_window: int = 100,
         reasoning_effort: str | None = None,
         web_proxy: str | None = None,
-        exec_config: ExecToolConfig | None = None,
         cron_service: CronService | None = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
     ):
-        from nanobot.config.schema import ExecToolConfig
         self.bus = bus
         self.channels_config = channels_config
         self.provider = provider
@@ -75,7 +73,6 @@ class AgentLoop:
         self.memory_window = memory_window
         self.reasoning_effort = reasoning_effort
         self.web_proxy = web_proxy
-        self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
 
@@ -91,7 +88,6 @@ class AgentLoop:
             max_tokens=self.max_tokens,
             reasoning_effort=reasoning_effort,
             web_proxy=web_proxy,
-            exec_config=self.exec_config,
             restrict_to_workspace=restrict_to_workspace,
         )
 
@@ -112,12 +108,7 @@ class AgentLoop:
         allowed_dir = self.workspace if self.restrict_to_workspace else None
         for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool):
             self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
-        self.tools.register(ExecTool(
-            working_dir=str(self.workspace),
-            timeout=self.exec_config.timeout,
-            restrict_to_workspace=self.restrict_to_workspace,
-            path_append=self.exec_config.path_append,
-        ))
+        self.tools.register(ExecTool(working_dir=str(self.workspace)))
         self.tools.register(WebSearchTool(max_results=10))
         self.tools.register(WebFetchTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
@@ -704,6 +695,17 @@ class AgentLoop:
             meta_done["_stream_done"] = True
             await self.bus.publish_outbound(OutboundMessage(
                 channel=msg.channel, chat_id=msg.chat_id, content="", metadata=meta_done,
+            ))
+            return None
+
+        if _is_streaming and final_content is not None:
+            # Content was already delivered token-by-token via stream_content_delta.
+            # Suppress the redundant assembled message and let the channel know the
+            # stream is done so it can flush the frontend's live panel.
+            meta_end = dict(msg.metadata or {})
+            meta_end["_stream_end"] = True
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel, chat_id=msg.chat_id, content="", metadata=meta_end,
             ))
             return None
 

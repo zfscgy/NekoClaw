@@ -231,7 +231,7 @@ class ChannelsConfig(Base):
 class AgentDefaults(Base):
     """Default agent configuration."""
 
-    workspace: str = "~/.nanobot/workspace"
+    workspace: str = (Path.home() / "nanobot/workspace").as_posix()
     model: str = "anthropic/claude-opus-4-5"
     provider: str = (
         "auto"  # Provider name (e.g. "anthropic", "openrouter") or "auto" for auto-detection
@@ -307,6 +307,8 @@ class WebToolsConfig(Base):
     proxy: str | None = (
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
+    chrome_executable_path: str | None = None
+    user_data_dir: str = (Path.home() / "nanobot/browser_data").as_posix()
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
@@ -315,6 +317,10 @@ class ExecToolConfig(Base):
 
     timeout: int = 60
     path_append: str = ""
+    profile_files: list[str] = Field(
+        default_factory=lambda: [".profile", (Path.home() / "nanobot" / ".profile").as_posix()]
+    )
+    profile_commands: list[str] = Field(default_factory=list)
 
 
 class MCPServerConfig(Base):

@@ -8,32 +8,66 @@ from threading import Lock
 
 from lightsear.playwright_client import PlaywrightCDPSession
 
+_SessionCallable = t.Callable[..., t.Any]
+_ReleaseCallback = t.Callable[[], None] | None
+_Task = tuple[
+    _SessionCallable | None,
+    tuple[t.Any, ...],
+    dict[str, t.Any],
+    cf.Future[t.Any],
+    _ReleaseCallback,
+]
 
-class _SessionWorker:
+
+class SessionPool:
+    """Pool of browser sessions, each running in its own dedicated thread."""
+
     def __init__(
         self,
         *,
-        timeout: float,
-        remote_debug_port: int,
-        proxy: str | None,
-        headless: bool,
+        size: int = 4,
+        timeout: float = 20.0,
+        chrome_executable_path: str | None = None,
+        user_data_dir: str | None = None,
+        proxy: str | None = None,
+        headless: bool = True,
         session_factory: "t.Callable[[], t.Any] | None" = None,
     ) -> None:
+        if size < 1:
+            raise ValueError("Session pool size must be at least 1")
+        if session_factory is None:
+            if not chrome_executable_path:
+                raise ValueError("chrome_executable_path is required when session_factory is not provided")
+            if not user_data_dir:
+                raise ValueError("user_data_dir is required when session_factory is not provided")
+
+        self.size = size
         self.timeout = timeout
-        self.remote_debug_port = remote_debug_port
+        self.chrome_executable_path = chrome_executable_path or ""
+        self.user_data_dir = user_data_dir or ""
         self.proxy = proxy
         self.headless = headless
         self._session_factory = session_factory
-        self._tasks: "queue.Queue[tuple[t.Callable[..., t.Any] | None, tuple[t.Any, ...], dict[str, t.Any], cf.Future[t.Any], t.Callable[[], None] | None]]" = queue.Queue()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+        self._closed = False
+        self._state_lock = Lock()
+
+        self._slots: list[tuple[queue.Queue[_Task], threading.Thread]] = []
+        self._available: queue.Queue[queue.Queue[_Task]] = queue.Queue(maxsize=size)
+
+        for _ in range(size):
+            slot_queue: queue.Queue[_Task] = queue.Queue()
+            thread = threading.Thread(target=self._run_slot, args=(slot_queue,), daemon=True)
+            thread.start()
+            self._slots.append((slot_queue, thread))
+            self._available.put(slot_queue)
 
     def _open_session(self) -> tuple[t.Any, t.Any]:
         managed = (
             self._session_factory()
             if self._session_factory is not None
             else PlaywrightCDPSession(
-                remote_debug_port=self.remote_debug_port,
+                chrome_executable_path=self.chrome_executable_path,
+                user_data_dir=self.user_data_dir,
                 timeout=int(self.timeout * 1000),
                 proxy=self.proxy,
                 headless=self.headless,
@@ -42,18 +76,18 @@ class _SessionWorker:
         session = managed.__enter__() if hasattr(managed, "__enter__") else managed
         return managed, session
 
-    def _run(self) -> None:
-        managed: t.Any = None
+    def _run_slot(self, slot_queue: queue.Queue[_Task]) -> None:
+        managed_session: t.Any = None
         session: t.Any = None
         try:
             while True:
-                fn, args, kwargs, future, release = self._tasks.get()
+                fn, args, kwargs, future, release = slot_queue.get()
                 if fn is None:
                     future.set_result(None)
                     break
-                if session is None:
-                    managed, session = self._open_session()
                 try:
+                    if session is None:
+                        managed_session, session = self._open_session()
                     future.set_result(fn(session, *args, **kwargs))
                 except Exception as exc:
                     future.set_exception(exc)
@@ -61,63 +95,8 @@ class _SessionWorker:
                     if release is not None:
                         release()
         finally:
-            if managed is not None and hasattr(managed, "__exit__"):
-                managed.__exit__(None, None, None)
-
-    def submit(
-        self,
-        fn: t.Callable[..., t.Any],
-        *args: t.Any,
-        future: "cf.Future[t.Any]",
-        release: "t.Callable[[], None] | None" = None,
-        **kwargs: t.Any,
-    ) -> None:
-        self._tasks.put((fn, args, kwargs, future, release))
-
-    def close(self) -> None:
-        future: cf.Future[None] = cf.Future()
-        self._tasks.put((None, (), {}, future, None))
-        future.result()
-        self._thread.join()
-
-
-class SessionPool:
-    """Pool of persistent browser sessions for parallel engine execution."""
-
-    def __init__(
-        self,
-        *,
-        size: int = 4,
-        timeout: float = 20.0,
-        remote_debug_port: int = 9222,
-        proxy: str | None = None,
-        headless: bool = True,
-        session_factory: "t.Callable[[], t.Any] | None" = None,
-    ) -> None:
-        if size < 1:
-            raise ValueError("Session pool size must be at least 1")
-
-        self.size = size
-        self.timeout = timeout
-        self.remote_debug_port = remote_debug_port
-        self.proxy = proxy
-        self.headless = headless
-        self._session_factory = session_factory
-        self._available: queue.Queue[_SessionWorker] = queue.Queue(maxsize=size)
-        self._workers: list[_SessionWorker] = []
-        self._closed = False
-        self._state_lock = Lock()
-
-        for _ in range(size):
-            worker = _SessionWorker(
-                timeout=timeout,
-                remote_debug_port=remote_debug_port,
-                proxy=proxy,
-                headless=headless,
-                session_factory=session_factory,
-            )
-            self._workers.append(worker)
-            self._available.put(worker)
+            if managed_session is not None and hasattr(managed_session, "__exit__"):
+                managed_session.__exit__(None, None, None)
 
     def __enter__(self) -> "SessionPool":
         return self
@@ -127,7 +106,7 @@ class SessionPool:
 
     def submit(
         self,
-        fn: t.Callable[..., t.Any],
+        fn: _SessionCallable,
         *args: t.Any,
         **kwargs: t.Any,
     ) -> "cf.Future[t.Any]":
@@ -135,15 +114,15 @@ class SessionPool:
             if self._closed:
                 raise RuntimeError("Session pool is closed")
 
-        worker = self._available.get()
+        slot_queue = self._available.get()
         future: cf.Future[t.Any] = cf.Future()
 
         def release() -> None:
             with self._state_lock:
                 if not self._closed:
-                    self._available.put(worker)
+                    self._available.put(slot_queue)
 
-        worker.submit(fn, *args, future=future, release=release, **kwargs)
+        slot_queue.put((fn, args, kwargs, future, release))
         return future
 
     def close(self) -> None:
@@ -151,57 +130,13 @@ class SessionPool:
             if self._closed:
                 return
             self._closed = True
-            workers = list(self._workers)
-            self._workers.clear()
+            slots = list(self._slots)
+            self._slots.clear()
 
-        for worker in reversed(workers):
-            worker.close()
+        for slot_queue, thread in reversed(slots):
+            done: cf.Future[None] = cf.Future()
+            slot_queue.put((None, (), {}, done, None))
+            done.result()
+            thread.join()
 
 
-class SessionPoolManager:
-    """Cache persistent session pools by their runtime configuration."""
-
-    def __init__(
-        self,
-        pool_factory: "t.Callable[..., SessionPool] | None" = None,
-    ) -> None:
-        self._pools: dict[tuple[int, float, int, str | None, bool], SessionPool] = {}
-        self._lock = Lock()
-        self._closed = False
-        self._pool_factory = pool_factory or SessionPool
-
-    def get_pool(
-        self,
-        *,
-        size: int,
-        timeout: float,
-        remote_debug_port: int = 9222,
-        proxy: str | None,
-        headless: bool = True,
-    ) -> SessionPool:
-        key = (size, timeout, remote_debug_port, proxy, headless)
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("Session pool manager is closed")
-            pool = self._pools.get(key)
-            if pool is None:
-                pool = self._pool_factory(
-                    size=size,
-                    timeout=timeout,
-                    remote_debug_port=remote_debug_port,
-                    proxy=proxy,
-                    headless=headless,
-                )
-                self._pools[key] = pool
-            return pool
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            pools = list(self._pools.values())
-            self._pools.clear()
-
-        for pool in reversed(pools):
-            pool.close()
