@@ -11,6 +11,7 @@ if _web_config.chrome_executable_path and _web_config.user_data_dir:
         chrome_executable_path=_web_config.chrome_executable_path,
         user_data_dir=_web_config.user_data_dir,
         proxy=_web_config.proxy,
+        headless=_web_config.headless,
     )
 
 

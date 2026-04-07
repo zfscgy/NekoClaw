@@ -79,7 +79,6 @@ type WsMessage =
   | { type: 'content'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
   | { type: 'think'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
   | { type: 'tool_call'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
-  | { type: string; conversation_id?: string }
 
 // ── Private helpers ────────────────────────────────────────────────
 
@@ -223,6 +222,7 @@ export function useChat() {
   const inputText = ref('')
   const isTyping = ref(false)
   const isStreaming = ref(false)
+  const streamActive = ref(false)
   const streamDone = ref(false)
   const wsStatus = ref<WsStatusKey>('disconnected')
   const lightboxSrc = ref<string | null>(null)
@@ -271,9 +271,9 @@ export function useChat() {
           groups.push({ type: 'actions', items, key })
         }
       } else {
-        if (groups.length && groups[groups.length - 1].type === 'actions') {
+        if (groups.length) {
           const prev = groups[groups.length - 1]
-          if (_openCache[prev.key] !== false) pendingOpen[prev.key] = false
+          if (prev.type === 'actions' && _openCache[prev.key] !== false) pendingOpen[prev.key] = false
         }
         groups.push({ type: 'content', role: m.role, content: m.content, media: m.media || [] })
         i++
@@ -284,7 +284,7 @@ export function useChat() {
       groups[groups.length - 1] = { ...groups[groups.length - 1], appendCursor: true }
     }
 
-    const streamStatus: StreamStatus | undefined = isStreaming.value
+    const streamStatus: StreamStatus | undefined = streamActive.value
       ? 'generating'
       : streamDone.value
         ? 'complete'
@@ -407,6 +407,7 @@ export function useChat() {
         case 'stream_start':
           isTyping.value = false
           isStreaming.value = false
+          streamActive.value = true
           streamDone.value = false
           _toolCallState = { current: null }
           _roundStart = arr.length
@@ -414,16 +415,19 @@ export function useChat() {
 
         case 'stream_content_delta':
           isStreaming.value = true
+          streamActive.value = true
           _appendStreamText(arr, 'content', 'assistant', msg.content || '')
           break
 
         case 'stream_think_delta':
           isStreaming.value = true
+          streamActive.value = true
           _appendStreamText(arr, 'think', undefined, msg.content || '')
           break
 
         case 'stream_tool_call_delta':
           isStreaming.value = true
+          streamActive.value = true
           _handleToolCallDelta(arr, cid, msg.content)
           break
 
@@ -433,6 +437,7 @@ export function useChat() {
             if (converted) arr[i] = converted
           }
           isStreaming.value = false
+          streamActive.value = false
           streamDone.value = true
           _toolCallState = { current: null }
           _roundStart = arr.length
@@ -444,11 +449,8 @@ export function useChat() {
             isStreaming.value = false
           }
           const fp = msg.role + '\x00' + (msg.content || '')
-          const isDup = arr.slice(-20).some(m => m.role === msg.role && (m.role + '\x00' + (m.content || '')) === fp)
-          if (!isDup) {
-            arr.push(msg as ChatMessage)
-            _updatePreview(cid, msg.content)
-          }
+          arr.push(msg as ChatMessage)
+          _updatePreview(cid, msg.content)
           break
         }
 
@@ -463,8 +465,7 @@ export function useChat() {
             if (!arr.slice(-20).some(m => m.role === 'assistant' && (m.role + '\x00' + (m.content || '')) === fp))
               arr.push(converted)
           } else if (!(msg.content && (msg as ChatMessage).content?.startsWith('send_message_with_attachments('))) {
-            if (!arr.slice(-20).some(m => m.type === 'tool_call' && (m.content || '') === ((msg as ChatMessage).content || '')))
-              arr.push(msg as ChatMessage)
+            arr.push(msg as ChatMessage)
           }
           break
         }
@@ -479,6 +480,7 @@ export function useChat() {
       wsStatus.value = 'disconnected'
       isTyping.value = false
       isStreaming.value = false
+      streamActive.value = false
       streamDone.value = false
       wsReconnectTimer = window.setTimeout(() => {
         if (wsGeneration === myGen && activeId.value === convId) {
@@ -495,6 +497,7 @@ export function useChat() {
       wsStatus.value = 'disconnected'
       isTyping.value = false
       isStreaming.value = false
+      streamActive.value = false
       streamDone.value = false
     }
   }
@@ -516,6 +519,7 @@ export function useChat() {
     activeId.value = id
     isTyping.value = false
     isStreaming.value = false
+    streamActive.value = false
     for (const k of Object.keys(_openCache)) delete _openCache[k]
     groupOpenState.value = {}
     messagesByConv.value[id] = []
@@ -547,6 +551,7 @@ export function useChat() {
 
     inputText.value = ''
     isTyping.value = true
+    streamActive.value = false
     streamDone.value = false
 
     const cid = activeId.value
@@ -576,6 +581,7 @@ export function useChat() {
   async function sendCommand(cmd: string): Promise<void> {
     if (!activeId.value) return
     isTyping.value = true
+    streamActive.value = false
     streamDone.value = false
     const cid = activeId.value
     if (ws && ws.readyState === WebSocket.OPEN) {

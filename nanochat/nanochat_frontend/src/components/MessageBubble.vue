@@ -18,7 +18,7 @@
         </template>
       </div>
       <span v-if="streamStatus" class="stream-status-icon bubble-status" :class="streamStatus">
-        <template v-if="streamStatus === 'complete'">✓</template>
+        <template v-if="streamStatus === 'complete'">&#10003;</template>
       </span>
     </div>
   </div>

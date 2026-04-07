@@ -11,10 +11,10 @@
         <span class="step-count">{{ visible.length }} step{{ visible.length === 1 ? '' : 's' }}</span>
         <span v-if="appendCursor" class="streaming-cursor"></span>
         <span v-if="streamStatus" class="stream-status-icon" :class="streamStatus">
-          <template v-if="streamStatus === 'complete'">✓</template>
+          <template v-if="streamStatus === 'complete'">&#10003;</template>
         </span>
       </summary>
-      <div class="action-items">
+      <div ref="actionItemsEl" class="action-items">
         <div
           v-for="(item, ii) in visible"
           :key="ii"
@@ -33,7 +33,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { toolCallName, toolCallRest, visibleItems, actionGroupLabel, type ActionItem } from '../utils/actions'
 import { renderMarkdown } from '../utils/markdown'
 import type { StreamStatus } from '../composables/useChat'
@@ -49,4 +49,20 @@ defineEmits<{ toggle: [] }>()
 
 const visible = computed(() => visibleItems(props.items))
 const label = computed(() => actionGroupLabel(props.items, visible.value))
+const actionItemsEl = ref<HTMLElement | null>(null)
+
+function scrollItemsToBottom(): void {
+  nextTick(() => {
+    if (!props.isOpen || !actionItemsEl.value) return
+    actionItemsEl.value.scrollTop = actionItemsEl.value.scrollHeight
+  })
+}
+
+watch(
+  () => [visible.value.length, props.isOpen, props.appendCursor, props.streamStatus],
+  scrollItemsToBottom,
+  { flush: 'post' }
+)
+
+onMounted(scrollItemsToBottom)
 </script>

@@ -7,24 +7,22 @@ import pytest
 
 
 def _load_real_provider():
-    """Load LiteLLMProvider from the user's nanobot config (~/.nanobot/config.json)."""
+    """Load OpenAIProvider from the user's nanobot config (~/.nanobot/config.json)."""
     from nanobot.config.loader import load_config
-    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.providers.openai_provider import OpenAIProvider
 
     cfg = load_config()
     model = cfg.agents.defaults.model
     provider_cfg = cfg.get_provider(model)
-    provider_name = cfg.get_provider_name(model)
 
     if provider_cfg is None or not provider_cfg.api_key:
         pytest.skip("No provider API key found in ~/.nanobot/config.json — skipping real-model test.")
 
-    return LiteLLMProvider(
+    return OpenAIProvider(
         api_key=provider_cfg.api_key,
         api_base=provider_cfg.api_base or None,
         default_model=model,
         extra_headers=provider_cfg.extra_headers,
-        provider_name=provider_name,
     ), model, cfg.agents.defaults.reasoning_effort
 
 
@@ -53,42 +51,40 @@ async def test_streaming_tokens_printed():
 
 @pytest.mark.asyncio
 async def test_raw_delta_fields():
-    """Bypass chat_stream and print every field on every raw LiteLLM delta.
+    """Bypass chat_stream and print every field on every raw OpenAI delta.
 
     Run this to discover which attribute carries the reasoning tokens for
-    your specific model/provider combination so we can fix chat_stream.
+    your specific model so we can fix chat_stream.
     """
-    from litellm import acompletion
+    from openai import AsyncOpenAI
 
     provider, model, reasoning_effort = _load_real_provider()
-    resolved_model = provider._resolve_model(model)
 
     kwargs: dict = {
-        "model": resolved_model,
+        "model": model,
         "messages": [{"role": "user", "content": "What is 17 * 23? Think step by step."}],
         "max_tokens": 1024,
         "temperature": 0.1,
         "stream": True,
     }
-    if provider.api_key:
-        kwargs["api_key"] = provider.api_key
-    if provider.api_base:
-        kwargs["api_base"] = provider.api_base
-    if provider.extra_headers:
-        kwargs["extra_headers"] = provider.extra_headers
     if reasoning_effort:
         kwargs["reasoning_effort"] = reasoning_effort
 
-    print(f"\n[raw_delta] model={model} → resolved={resolved_model}  reasoning_effort={reasoning_effort}")
+    client = AsyncOpenAI(
+        api_key=provider.api_key or "no-key",
+        base_url=provider.api_base or None,
+        default_headers=provider.extra_headers or {},
+    )
+
+    print(f"\n[raw_delta] model={model}  reasoning_effort={reasoning_effort}")
     print("[raw_delta] --- raw delta attributes per chunk ---")
 
-    stream = await acompletion(**kwargs)
+    stream = await client.chat.completions.create(**kwargs)
     async for chunk in stream:
         print("--- new chunk ---")
         delta = chunk.choices[0].delta if chunk.choices else None
         if delta is None:
             continue
-        # Print every non-None, non-empty attribute on the delta
         attrs = {k: v for k, v in delta.to_dict().items() if v is not None}
         if attrs:
             print(attrs, flush=True)
