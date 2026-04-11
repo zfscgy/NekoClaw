@@ -1,0 +1,4 @@
+- [ ] Fix the message duplication bug
+- [ ] Merging StreamDeltas in `on_delta`
+- [ ] Enable media sending/receiving
+- [ ] Python environment packing

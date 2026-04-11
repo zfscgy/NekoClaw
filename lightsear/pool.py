@@ -27,26 +27,17 @@ class SessionPool:
         *,
         size: int = 4,
         timeout: float = 20.0,
-        chrome_executable_path: str | None = None,
-        user_data_dir: str | None = None,
-        proxy: str | None = None,
-        headless: bool = True,
+        cdp_port: int = 9222,
+        cdp_host: str = "localhost",
         session_factory: "t.Callable[[], t.Any] | None" = None,
     ) -> None:
         if size < 1:
             raise ValueError("Session pool size must be at least 1")
-        if session_factory is None:
-            if not chrome_executable_path:
-                raise ValueError("chrome_executable_path is required when session_factory is not provided")
-            if not user_data_dir:
-                raise ValueError("user_data_dir is required when session_factory is not provided")
 
         self.size = size
         self.timeout = timeout
-        self.chrome_executable_path = chrome_executable_path or ""
-        self.user_data_dir = user_data_dir or ""
-        self.proxy = proxy
-        self.headless = headless
+        self.cdp_port = cdp_port
+        self.cdp_host = cdp_host
         self._session_factory = session_factory
         self._closed = False
         self._state_lock = Lock()
@@ -66,11 +57,9 @@ class SessionPool:
             self._session_factory()
             if self._session_factory is not None
             else PlaywrightCDPSession(
-                chrome_executable_path=self.chrome_executable_path,
-                user_data_dir=self.user_data_dir,
+                cdp_port=self.cdp_port,
+                cdp_host=self.cdp_host,
                 timeout=int(self.timeout * 1000),
-                proxy=self.proxy,
-                headless=self.headless,
             )
         )
         session = managed.__enter__() if hasattr(managed, "__enter__") else managed

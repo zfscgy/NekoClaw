@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import atexit
 import logging
+import subprocess
+import sys
+import time
 import typing as t
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -29,6 +34,12 @@ ENGINES: dict[str, t.Callable[[t.Any, str], list[SearchResult]]] = {
 }
 
 _pool: SessionPool | None = None
+_chromium_proc: subprocess.Popen | None = None
+
+# Suppress the console window on Windows when spawning Chromium.
+_POPEN_FLAGS: dict[str, t.Any] = (
+    {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -40,35 +51,110 @@ def initialize_pool(
     *,
     chrome_executable_path: str,
     user_data_dir: str,
-    proxy: str | None = None,
+    cdp_port: int = 9222,
+    cdp_host: str = "localhost",
     headless: bool = True,
+    proxy: str | None = None,
     timeout: float = 20.0,
     pool_size: int | None = None,
+    startup_timeout: float = 15.0,
 ) -> None:
-    """Create (or re-create) the global session pool.
+    """Launch Chromium and create (or re-create) the global session pool.
 
     Must be called before :func:`search` or :func:`web_fetch`. Can be called
-    again at any time to change settings; the previous pool is closed first.
+    again at any time to change settings; the previous Chromium process and
+    pool are shut down first.
 
     :param chrome_executable_path: Path to the Chrome/Chromium executable.
-    :param user_data_dir: User-data directory for the persistent browser profile.
-    :param proxy: Optional proxy URL, e.g. ``"http://127.0.0.1:10808"``.
-    :param headless: Run the browser in headless mode (default ``True``).
-    :param timeout: Browser session timeout in seconds (default ``20.0``).
-    :param pool_size: Number of concurrent browser sessions (default: number of engines).
+    :param user_data_dir: User-data directory for the browser profile.
+    :param cdp_port: Remote-debugging port Chromium will listen on (default ``9222``).
+    :param cdp_host: Address Chromium binds the debug port to (default ``"localhost"``).
+    :param headless: Run Chromium in headless mode (default ``True``).
+    :param proxy: Optional proxy URL passed to Chromium, e.g. ``"http://127.0.0.1:10808"``.
+    :param timeout: Per-request browser timeout in seconds (default ``20.0``).
+    :param pool_size: Number of concurrent sessions (default: number of engines).
+    :param startup_timeout: Seconds to wait for Chromium to become ready (default ``15.0``).
     """
-    global _pool
+    global _pool, _chromium_proc
+
+    # Shut down any previously managed Chromium process.
+    _stop_chromium()
+
+    cmd = [
+        chrome_executable_path,
+        f"--remote-debugging-port={cdp_port}",
+        f"--user-data-dir={user_data_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+        "--disable-sync",
+    ]
+    if headless:
+        cmd.append("--headless=new")
+    if proxy:
+        cmd.append(f"--proxy-server={proxy}")
+    # Allow remote connections from non-localhost when cdp_host is overridden.
+    if cdp_host not in ("localhost", "127.0.0.1"):
+        cmd.append(f"--remote-debugging-address={cdp_host}")
+
+    logger.debug("Launching Chromium: %s", " ".join(cmd))
+    _chromium_proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **_POPEN_FLAGS,
+    )
+
+    _wait_for_cdp(cdp_host, cdp_port, startup_timeout, _chromium_proc)
+
     old = _pool
     _pool = SessionPool(
         size=pool_size or len(ENGINES),
         timeout=timeout,
-        chrome_executable_path=chrome_executable_path,
-        user_data_dir=user_data_dir,
-        proxy=proxy,
-        headless=headless,
+        cdp_port=cdp_port,
+        cdp_host=cdp_host,
     )
     if old is not None:
         old.close()
+
+
+def _wait_for_cdp(host: str, port: int, startup_timeout: float, proc: subprocess.Popen) -> None:
+    """Poll the CDP /json/version endpoint until Chromium is ready."""
+    endpoint = f"http://{host}:{port}/json/version"
+    deadline = time.monotonic() + startup_timeout
+    while True:
+        # Check the process hasn't crashed.
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"Chromium process exited unexpectedly (code {proc.returncode}) "
+                f"before the CDP endpoint became available at {endpoint}"
+            )
+        try:
+            urllib.request.urlopen(endpoint, timeout=1)
+            logger.debug("Chromium CDP ready at %s", endpoint)
+            return
+        except (urllib.error.URLError, OSError):
+            pass
+        if time.monotonic() >= deadline:
+            proc.kill()
+            raise RuntimeError(
+                f"Chromium did not become ready at {endpoint} within {startup_timeout}s"
+            )
+        time.sleep(0.25)
+
+
+def _stop_chromium() -> None:
+    global _chromium_proc
+    proc = _chromium_proc
+    if proc is None:
+        return
+    _chromium_proc = None
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 
 def _get_pool() -> SessionPool:
@@ -84,6 +170,7 @@ def _close_pool() -> None:
     if _pool is not None:
         _pool.close()
         _pool = None
+    _stop_chromium()
 
 
 atexit.register(_close_pool)

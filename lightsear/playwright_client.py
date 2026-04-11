@@ -4,11 +4,10 @@ import asyncio
 import concurrent.futures as cf
 from dataclasses import dataclass
 import logging
-import os
 import threading
 import typing as t
 
-from playwright.async_api import BrowserContext, Playwright, TimeoutError as PlaywrightTimeoutError, async_playwright
+from playwright.async_api import Browser, BrowserContext, Playwright, TimeoutError as PlaywrightTimeoutError, async_playwright
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +21,7 @@ class FetchResponse:
 
 @dataclass(frozen=True, slots=True)
 class _BrowserKey:
-    executable_path: str
-    user_data_dir: str
-    proxy: str | None
-    headless: bool
+    cdp_endpoint: str
 
 
 @dataclass(slots=True)
@@ -46,6 +42,7 @@ class _AsyncBrowserRuntime:
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
         self._playwright: Playwright | None = None
+        self._browser: Browser | None = None
         self._context: BrowserContext | None = None
 
     def start(self) -> None:
@@ -53,7 +50,9 @@ class _AsyncBrowserRuntime:
         self._thread.start()
         self._ready.wait()
         if self._startup_error is not None:
-            raise RuntimeError("Failed to start Playwright runtime") from self._startup_error
+            raise RuntimeError(
+                f"Failed to connect to Chromium at {self._key.cdp_endpoint}"
+            ) from self._startup_error
 
     def _thread_main(self) -> None:
         loop = asyncio.new_event_loop()
@@ -74,21 +73,21 @@ class _AsyncBrowserRuntime:
             loop.close()
 
     async def _startup(self) -> None:
-        os.makedirs(self._key.user_data_dir, exist_ok=True)
         self._playwright = await async_playwright().start()
-        launch_options: dict[str, t.Any] = {
-            "user_data_dir": self._key.user_data_dir,
-            "executable_path": self._key.executable_path,
-            "headless": self._key.headless,
-        }
-        if self._key.proxy:
-            launch_options["proxy"] = {"server": self._key.proxy}
-        self._context = await self._playwright.chromium.launch_persistent_context(**launch_options)
+        self._browser = await self._playwright.chromium.connect_over_cdp(
+            self._key.cdp_endpoint
+        )
+        if self._browser.contexts:
+            self._context = self._browser.contexts[0]
+        else:
+            self._context = await self._browser.new_context()
 
     async def _shutdown(self) -> None:
-        if self._context is not None:
-            await self._context.close()
-            self._context = None
+        self._context = None
+        if self._browser is not None:
+            # close() only disconnects Playwright; it does not kill the browser process
+            await self._browser.close()
+            self._browser = None
         if self._playwright is not None:
             await self._playwright.stop()
             self._playwright = None
@@ -120,6 +119,7 @@ class _AsyncBrowserRuntime:
         page = await self._context.new_page()
         page.set_default_timeout(timeout)
         page.set_default_navigation_timeout(timeout)
+        await page.add_init_script("delete Object.getPrototypeOf(navigator).webdriver")
         try:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             if wait_selector:
@@ -138,37 +138,31 @@ class _AsyncBrowserRuntime:
 
 
 class PlaywrightCDPSession:
-    """Browser session adapter that exposes ``fetch(...)`` in native mode.
+    """Browser session adapter that connects to a running Chromium instance
+    via the Chrome DevTools Protocol (CDP) debug port.
 
-    The implementation launches a persistent browser context using a concrete
-    Chrome/Chromium executable plus a user-data directory. A single browser
-    process is shared by all sessions with the same configuration.
+    Chromium must be launched externally with ``--remote-debugging-port=<port>``
+    (and optionally ``--remote-debugging-address=<host>``) before creating a
+    session.  A single CDP connection is shared across all sessions targeting
+    the same endpoint.
+
+    Example launch command::
+
+        chromium --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-profile
     """
 
     def __init__(
         self,
         *,
-        chrome_executable_path: str,
-        user_data_dir: str,
+        cdp_port: int = 9222,
+        cdp_host: str = "localhost",
         timeout: int,
-        proxy: str | None = None,
-        headless: bool = True,
     ) -> None:
-        if not chrome_executable_path:
-            raise ValueError("chrome_executable_path is required")
-        if not user_data_dir:
-            raise ValueError("user_data_dir is required")
-        self.chrome_executable_path = chrome_executable_path
-        self.user_data_dir = user_data_dir
+        self.cdp_port = cdp_port
+        self.cdp_host = cdp_host
         self.timeout = timeout
-        self.proxy = proxy
-        self.headless = headless
-        self._key = _BrowserKey(
-            executable_path=chrome_executable_path,
-            user_data_dir=user_data_dir,
-            proxy=proxy,
-            headless=headless,
-        )
+        cdp_endpoint = f"http://{cdp_host}:{cdp_port}"
+        self._key = _BrowserKey(cdp_endpoint=cdp_endpoint)
         self._runtime: _AsyncBrowserRuntime | None = None
 
     def __enter__(self) -> "PlaywrightCDPSession":

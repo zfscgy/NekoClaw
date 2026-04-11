@@ -1,6 +1,6 @@
-"""Tests for nanobot.tools.web_search.search_duckduckgo."""
+"""Tests for nekoclaw.tools.web_search.search_duckduckgo."""
 
-from nanobot.tools.web import lightsear_search
+from nekoclaw.tools.web import lightsear_search
 
 
 def test__search_duckduckgo():

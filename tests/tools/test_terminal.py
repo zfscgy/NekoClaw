@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
-import nanobot.tools.terminal as terminal
-from nanobot.config.schema import Config, ExecToolConfig, ToolsConfig
+import nekoclaw.tools.terminal as terminal
+from nekoclaw.config.schema import Config, ExecToolConfig, ToolsConfig
 
 
 def _shell_test_config() -> Config:

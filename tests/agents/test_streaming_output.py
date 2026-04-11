@@ -7,16 +7,16 @@ import pytest
 
 
 def _load_real_provider():
-    """Load OpenAIProvider from the user's nanobot config (~/.nanobot/config.json)."""
-    from nanobot.config.loader import load_config
-    from nanobot.providers.openai_provider import OpenAIProvider
+    """Load OpenAIProvider from the user's nekoclaw config (~/.nekoclaw/config.json)."""
+    from nekoclaw.config.loader import load_config
+    from nekoclaw.providers.openai_provider import OpenAIProvider
 
     cfg = load_config()
     model = cfg.agents.defaults.model
     provider_cfg = cfg.get_provider(model)
 
     if provider_cfg is None or not provider_cfg.api_key:
-        pytest.skip("No provider API key found in ~/.nanobot/config.json — skipping real-model test.")
+        pytest.skip("No provider API key found in ~/.nekoclaw/config.json — skipping real-model test.")
 
     return OpenAIProvider(
         api_key=provider_cfg.api_key,
@@ -153,16 +153,16 @@ async def test_streaming_via_agent_loop():
     from pathlib import Path
     from unittest.mock import patch
 
-    from nanobot.agent.loop import AgentLoop
-    from nanobot.bus.queue import MessageBus
+    from nekoclaw.agent.loop import AgentLoop
+    from nekoclaw.bus.queue import MessageBus
 
     provider, model, reasoning_effort = _load_real_provider()
 
     bus = MessageBus()
 
-    with patch("nanobot.agent.loop.ContextBuilder"), \
-         patch("nanobot.agent.loop.SessionManager"), \
-         patch("nanobot.agent.loop.SubagentManager") as MockSubMgr:
+    with patch("nekoclaw.agent.loop.ContextBuilder"), \
+         patch("nekoclaw.agent.loop.SessionManager"), \
+         patch("nekoclaw.agent.loop.SubagentManager") as MockSubMgr:
         MockSubMgr.return_value.cancel_by_session.return_value = 0
         loop = AgentLoop(
             bus=bus,
@@ -182,7 +182,9 @@ async def test_streaming_via_agent_loop():
         elif delta.type == "thinking":
             think_chunks.append(delta.content)
 
-    messages = [{"role": "user", "content": "Count from 1 to 5, one number per line."}]
+    from nekoclaw.providers.base import StreamDelta
+
+    messages = [StreamDelta(type="user", content="Count from 1 to 5, one number per line.")]
 
     print(f"\n[agent_loop] model={model}  reasoning_effort={reasoning_effort}")
     final_content, tools_used, _ = await loop._run_agent_loop(

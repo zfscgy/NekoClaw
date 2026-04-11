@@ -6,7 +6,7 @@
 ```bash
 pip install -e .  # 安装 NekoClaw 库以及依赖
 playwright install chromium # 安装chromium
-cd nanochat/frontend
+cd nekochat/frontend
 npm run build     # 编译静态前端页面
 ```
 

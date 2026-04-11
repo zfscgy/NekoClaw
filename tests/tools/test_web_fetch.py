@@ -1,4 +1,4 @@
-from nanobot.tools.web import lightsear_fetch
+from nekoclaw.tools.web import lightsear_fetch
 
 
 def test__web_fetch_text():
