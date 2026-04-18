@@ -205,6 +205,7 @@ class AgentLoop:
             if response_tool_calls:
                 if response_content:
                     messages.append(StreamDelta(type="content", content=response_content))
+
                 for tc in response_tool_calls:
                     messages.append(StreamDelta(type="tool_call", content=tc))
 
@@ -230,6 +231,10 @@ class AgentLoop:
                     channel=channel, chat_id=chat_id,
                     type="clear_unsent_buffer",
                 ))
+
+                # If the message tool was called, the current round is over, waiting for user request...
+                if "send_message_with_attachments" in tools_used:
+                    break
                 continue
             else:
                 if is_error_content(response_content):
