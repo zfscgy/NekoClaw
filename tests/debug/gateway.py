@@ -1,9 +1,4 @@
-import sys
-
-
-from nekoclaw.cli.commands import app
-
+from nekoclaw.__main__ import gateway
 
 if __name__ == "__main__":
-    sys.argv = ["nekoclaw", "gateway"]
-    app()
+    gateway()

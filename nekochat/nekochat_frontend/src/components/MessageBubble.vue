@@ -17,9 +17,16 @@
           </a>
         </template>
       </div>
-      <span v-if="streamStatus" class="stream-status-icon bubble-status" :class="streamStatus">
-        <template v-if="streamStatus === 'complete'">&#10003;</template>
-      </span>
+      <div v-if="formattedTime || streamStatus" class="msg-footer">
+        <span v-if="formattedTime" class="msg-time">{{ formattedTime }}</span>
+        <span v-if="streamStatus" class="stream-status-icon bubble-status" :class="streamStatus">
+          <template v-if="streamStatus === 'complete'">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <polyline points="1.5,5 3.8,7.5 8.5,2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </template>
+        </span>
+      </div>
     </div>
   </div>
 </template>
@@ -36,16 +43,29 @@ const props = withDefaults(defineProps<{
   media?: string[]
   appendCursor?: boolean
   streamStatus?: StreamStatus
+  time?: string
 }>(), {
   content: '',
   media: () => [],
   appendCursor: false,
   streamStatus: undefined,
+  time: undefined,
 })
 
 defineEmits<{ lightbox: [src: string] }>()
 
 const rendered = computed(() =>
-  renderMarkdown(props.content ?? '') + (props.appendCursor ? '<span class="streaming-cursor"></span>' : '')
+  renderMarkdown(props.content ?? '')
 )
+
+const formattedTime = computed(() => {
+  if (!props.time) return null
+  try {
+    const d = new Date(props.time)
+    if (isNaN(d.getTime())) return null
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return null
+  }
+})
 </script>

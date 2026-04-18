@@ -2,7 +2,7 @@
 
 import json
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal
 
 
@@ -161,6 +161,7 @@ class StreamDelta:
 
     type = user:
         content = string (user message text) or list (multimodal content blocks)
+        media   = list of local filesystem paths to media files attached by the user
 
     type = thinking / content:
         content = string
@@ -171,8 +172,14 @@ class StreamDelta:
     type = tool_call_results:
         content = list[ToolCallResult]
     """
-    type: Literal["tool_call", "thinking", "content", "user", "tool_call_results", "system"]
+    type: Literal["tool_call", "thinking", "content", "user", "tool_call_results", "system", "subagent_ref"]
     content: str | ToolCallRequest | list
+    # Local filesystem paths saved alongside user messages for UI replay.
+    # Only populated for type=="user"; empty for all other delta types.
+    media: list[str] = field(default_factory=list)
+    # UTC ISO 8601 timestamp recorded when the delta is persisted to the session.
+    # Only set on final "content" deltas (assistant responses), never on streaming chunks.
+    time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict for session storage."""
@@ -193,7 +200,12 @@ class StreamDelta:
                     for r in self.content if isinstance(r, ToolCallResult)
                 ],
             }
-        return {"type": self.type, "content": self.content}
+        d: dict[str, Any] = {"type": self.type, "content": self.content}
+        if self.media:
+            d["media"] = self.media
+        if self.time:
+            d["time"] = self.time
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StreamDelta":
@@ -214,7 +226,8 @@ class StreamDelta:
                 )
                 for r in raw if isinstance(r, dict)
             ]
-        return cls(type=dtype, content=raw)
+        media = data.get("media") or []
+        return cls(type=dtype, content=raw, media=media, time=data.get("time"))
 
 
 def delta_to_openai(deltas: list[StreamDelta]) -> list[dict[str, Any]]:
@@ -272,6 +285,16 @@ def delta_to_openai(deltas: list[StreamDelta]) -> list[dict[str, Any]]:
                         "name": r.name,
                         "content": r.content,
                     })
+        elif delta.type == "subagent_ref" and isinstance(delta.content, dict):
+            flush_assistant()
+            ref = delta.content
+            announce = ref.get("announce")
+            if announce and isinstance(announce, str):
+                messages.append({"role": "user", "content": announce})
+            else:
+                status = "completed successfully" if ref.get("status") == "ok" else "failed"
+                text = f"[Subagent '{ref.get('label', 'task')}' {status}]\nTask: {ref.get('task', '')}"
+                messages.append({"role": "user", "content": text})
 
     flush_assistant()
     return messages

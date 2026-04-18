@@ -44,11 +44,6 @@ def get_backup_dir() -> Path:
     return Path.home() / ".nekoclaw" / "backup"
 
 
-def get_cli_history_path() -> Path:
-    """Return the shared CLI history file path."""
-    return Path.home() / ".nekoclaw" / "history" / "cli_history"
-
-
 def get_bridge_install_dir() -> Path:
     """Return the shared WhatsApp bridge installation directory."""
     return Path.home() / ".nekoclaw" / "bridge"

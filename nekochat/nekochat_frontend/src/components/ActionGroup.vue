@@ -9,9 +9,12 @@
         <span class="chevron">▶</span>
         <span>{{ isOpen ? 'Actions' : label }}</span>
         <span class="step-count">{{ visible.length }} step{{ visible.length === 1 ? '' : 's' }}</span>
-        <span v-if="appendCursor" class="streaming-cursor"></span>
         <span v-if="streamStatus" class="stream-status-icon" :class="streamStatus">
-          <template v-if="streamStatus === 'complete'">&#10003;</template>
+          <template v-if="streamStatus === 'complete'">
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <polyline points="1.5,5 3.8,7.5 8.5,2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </template>
         </span>
       </summary>
       <div ref="actionItemsEl" class="action-items">

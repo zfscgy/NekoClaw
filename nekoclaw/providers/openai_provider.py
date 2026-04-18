@@ -45,6 +45,29 @@ class OpenAIProvider(LLMProvider):
             default_headers=extra_headers or {},
         )
 
+    def reconfigure(
+        self,
+        api_key: str | None = None,
+        api_base: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
+        """Rebuild the underlying OpenAI client with new credentials.
+
+        Any argument left as ``None`` retains the current value, except that
+        ``extra_headers`` may be passed as an empty dict to clear it.
+        """
+        if api_key is not None:
+            self.api_key = api_key
+        if api_base is not None:
+            self.api_base = api_base or None
+        if extra_headers is not None:
+            self.extra_headers = extra_headers or {}
+        self._client = AsyncOpenAI(
+            api_key=self.api_key or "no-key",
+            base_url=self.api_base or None,
+            default_headers=self.extra_headers or {},
+        )
+
     @staticmethod
     def _sanitize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Strip non-standard keys from messages before sending to the API."""

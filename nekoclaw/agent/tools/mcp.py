@@ -47,7 +47,7 @@ class MCPToolWrapper(Tool):
             return f"(MCP tool call timed out after {self._tool_timeout}s)"
         except asyncio.CancelledError:
             # MCP SDK's anyio cancel scopes can leak CancelledError on timeout/failure.
-            # Re-raise only if our task was externally cancelled (e.g. /stop).
+            # Re-raise only if our task was externally cancelled.
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise

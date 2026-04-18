@@ -13,7 +13,7 @@
         </button>
       </template>
       <button class="btn-collapse" :title="isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'" @click="$emit('toggle-collapse')">
-        <span class="collapse-icon" :class="{ flipped: isCollapsed }">‹</span>
+        <svg class="collapse-icon" :class="{ flipped: isCollapsed }" width="16" height="16" viewBox="0 0 16 16" fill="none"><polyline points="10,3 5,8 10,13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
     </div>
     <template v-if="!isCollapsed">

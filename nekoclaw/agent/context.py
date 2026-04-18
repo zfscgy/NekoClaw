@@ -25,7 +25,7 @@ class ContextBuilder:
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
 
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    def build_system_prompt(self) -> str:
         """Build the system prompt from identity, bootstrap files, memory, and skills."""
         parts = [self._get_identity()]
 
@@ -124,7 +124,6 @@ Reply directly with text for conversations. Only use the 'send_message_with_atta
         self,
         history: list[StreamDelta],
         current_message: str,
-        skill_names: list[str] | None = None,
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
@@ -143,18 +142,51 @@ Reply directly with text for conversations. Only use the 'send_message_with_atta
         else:
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
+        processed = self._process_history(history)
+
         return [
-            StreamDelta(type="system", content=self.build_system_prompt(skill_names)),
-            *history,
+            StreamDelta(type="system", content=self.build_system_prompt()),
+            *processed,
             StreamDelta(type="user", content=merged),
         ]
 
+    @staticmethod
+    def _process_history(history: list[StreamDelta]) -> list[StreamDelta]:
+        """Process history deltas, converting special types for LLM consumption.
+
+        ``subagent_ref`` deltas are converted into a user-role message so the
+        LLM retains context about completed subagent tasks across reloads.
+        The original announce content is preserved verbatim when available.
+        """
+        out: list[StreamDelta] = []
+        for delta in history:
+            if delta.type == "subagent_ref" and isinstance(delta.content, dict):
+                ref = delta.content
+                # Use the stored announce content if available (it already
+                # contains the full task + result text the LLM originally saw).
+                announce = ref.get("announce")
+                if announce and isinstance(announce, str):
+                    out.append(StreamDelta(type="user", content=announce))
+                else:
+                    status = "completed successfully" if ref.get("status") == "ok" else "failed"
+                    text = f"[Subagent '{ref.get('label', 'task')}' {status}]\nTask: {ref.get('task', '')}"
+                    out.append(StreamDelta(type="user", content=text))
+            else:
+                out.append(delta)
+        return out
+
     def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional base64-encoded images."""
+        """Build user message content with optional media attachments.
+
+        Images are inlined as base64 data URIs.  Other file types are referenced
+        as ``file://`` URIs appended to the text portion of the message.
+        """
         if not media:
             return text
 
-        images = []
+        image_parts: list[dict[str, Any]] = []
+        file_refs: list[str] = []
+
         for path in media:
             p = Path(path)
             if not p.is_file():
@@ -162,12 +194,22 @@ Reply directly with text for conversations. Only use the 'send_message_with_atta
             raw = p.read_bytes()
             # Detect real MIME type from magic bytes; fallback to filename guess
             mime = detect_image_mime(raw) or mimetypes.guess_type(path)[0]
-            if not mime or not mime.startswith("image/"):
-                continue
-            b64 = base64.b64encode(raw).decode()
-            images.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            if mime and mime.startswith("image/"):
+                b64 = base64.b64encode(raw).decode()
+                image_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            else:
+                file_refs.append(p.resolve().as_uri())
 
-        if not images:
+        if not image_parts and not file_refs:
             return text
-        return images + [{"type": "text", "text": text}]
+
+        text_part = text
+        if file_refs:
+            refs = "\n".join(f"[attached file: {uri}]" for uri in file_refs)
+            text_part = f"{refs}\n\n{text}" if text else refs
+
+        if not image_parts:
+            return text_part
+
+        return image_parts + [{"type": "text", "text": text_part}]
 

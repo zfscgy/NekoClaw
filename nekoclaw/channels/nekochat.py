@@ -8,14 +8,15 @@ import mimetypes
 import os
 import shutil
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 from loguru import logger
 
-from nekoclaw.bus.events import OutboundMessage
 from nekoclaw.bus.queue import MessageBus
+from nekoclaw.bus.events import OutboundMessage
 from nekoclaw.bus.events import InboundMessage
 from nekoclaw.channels.base import BaseChannel
 from nekoclaw.config.schema import NekoChatConfig
@@ -122,6 +123,9 @@ class NekoChatChannel(BaseChannel):
         #   ],
         # }
         self._cur_round: dict[str, dict] = {}
+        # Subagent tracking: conversation_id -> { subagent_id -> state }
+        # state = { label, status, segments: [replay payloads], cur_round: {} }
+        self._subagent_state: dict[str, dict[str, dict[str, Any]]] = {}
         self._app: Any = None
         self._runner: Any = None
         self._site: Any = None
@@ -204,14 +208,20 @@ class NekoChatChannel(BaseChannel):
             if dtype == "user":
                 text = raw
                 if isinstance(raw, list):
+                    # Filter out [image] placeholders — the real files are in the
+                    # media field and will be shown as thumbnails / chips.
                     text = " ".join(
                         c.get("text", "") for c in raw
                         if isinstance(c, dict) and c.get("type") == "text"
-                    )
-                if text:
+                        and c.get("text") != "[image]"
+                    ).strip()
+                # Resolve stored filesystem paths → /file/{token} URLs for the UI.
+                stored_media: list[str] = m.get("media") or []
+                media_urls = NekoChatChannel._media_to_urls(stored_media) if stored_media else []
+                if text or media_urls:
                     ui.append({
                         "type": "content", "role": "user",
-                        "content": text, "media": [],
+                        "content": text, "media": media_urls,
                         "conversation_id": cid,
                     })
 
@@ -226,11 +236,14 @@ class NekoChatChannel(BaseChannel):
 
             elif dtype == "content":
                 if raw:
-                    ui.append({
+                    entry: dict[str, Any] = {
                         "type": "content", "role": "assistant",
                         "content": raw, "media": [],
                         "conversation_id": cid,
-                    })
+                    }
+                    if m.get("time"):
+                        entry["time"] = m["time"]
+                    ui.append(entry)
 
             elif dtype == "tool_call":
                 tc = raw if isinstance(raw, dict) else {}
@@ -248,6 +261,17 @@ class NekoChatChannel(BaseChannel):
                 ui.append({
                     "type": "tool_call", "role": "assistant",
                     "content": f"{name}({args_str})", "media": [],
+                    "conversation_id": cid,
+                })
+
+            elif dtype == "subagent_ref":
+                ref = raw if isinstance(raw, dict) else {}
+                ui.append({
+                    "type": "subagent_ref",
+                    "session_id": ref.get("session_id", ""),
+                    "label": ref.get("label", ""),
+                    "status": ref.get("status", "ok"),
+                    "task": ref.get("task", ""),
                     "conversation_id": cid,
                 })
 
@@ -291,6 +315,14 @@ class NekoChatChannel(BaseChannel):
         from nekoclaw.providers.base import ToolCallRequest
 
         conversation_id = msg.chat_id
+        sub_id = msg.metadata.get("subagent_id")
+
+        # ── Subagent messages ──────────────────────────────────────
+        if sub_id:
+            await self._send_subagent(msg, conversation_id, sub_id)
+            return
+
+        # ── Main-agent messages ────────────────────────────────────
 
         if msg.type == "clear_unsent_buffer":
             self._stream_segments.pop(conversation_id, None)
@@ -304,6 +336,7 @@ class NekoChatChannel(BaseChannel):
             await self._broadcast(conversation_id, {
                 "type": "stream_end",
                 "conversation_id": conversation_id,
+                "time": datetime.now(timezone.utc).isoformat(),
             })
             return
 
@@ -359,9 +392,6 @@ class NekoChatChannel(BaseChannel):
                 })
                 return
 
-            # Complete tool call — commit current round to replay segments.
-            # No intermediate stream_end is broadcast here; stream_end is sent
-            # only once, when the final response is ready (via _process_message).
             if isinstance(tc.arguments, dict) and tc.name == "send_message_with_attachments":
                 if isinstance(tc.arguments.get("media"), list):
                     tc_dict["arguments"] = {**tc.arguments, "media": self._media_to_urls(tc.arguments["media"])}
@@ -378,6 +408,159 @@ class NekoChatChannel(BaseChannel):
             }
             segs.append(payload)
             await self._broadcast(conversation_id, payload)
+
+    # ------------------------------------------------------------------
+    # Subagent message handling
+    # ------------------------------------------------------------------
+
+    async def _send_subagent(self, msg: OutboundMessage, conversation_id: str, sub_id: str) -> None:
+        """Route a subagent-tagged outbound message to WebSocket clients."""
+        from nekoclaw.providers.base import ToolCallRequest
+
+        label = msg.metadata.get("subagent_label", sub_id)
+        subs = self._subagent_state.setdefault(conversation_id, {})
+
+        if msg.type == "stream_start":
+            subs[sub_id] = {
+                "label": label,
+                "status": "running",
+                "segments": [],
+                "cur_round": {},
+            }
+            await self._broadcast(conversation_id, {
+                "type": "subagent_start",
+                "subagent_id": sub_id,
+                "label": label,
+                "conversation_id": conversation_id,
+            })
+            return
+
+        if msg.type == "stream_end":
+            status = msg.metadata.get("subagent_status", "ok")
+            session_id = f"subagent:{sub_id}"
+            if sub_id in subs:
+                subs[sub_id]["status"] = status
+                subs[sub_id]["cur_round"] = {}
+                subs[sub_id]["session_id"] = session_id
+            await self._broadcast(conversation_id, {
+                "type": "subagent_end",
+                "subagent_id": sub_id,
+                "status": status,
+                "session_id": session_id,
+                "conversation_id": conversation_id,
+            })
+            return
+
+        if msg.type == "clear_unsent_buffer":
+            state = subs.get(sub_id)
+            if state:
+                cur = state.pop("cur_round", {})
+                state["segments"].extend(
+                    self._cur_round_to_subagent_replay(conversation_id, sub_id, cur)
+                )
+                state["cur_round"] = {}
+            return
+
+        if msg.type != "delta" or msg.msg is None:
+            return
+
+        delta = msg.msg
+        state = subs.get(sub_id)
+        if not state:
+            return
+
+        if delta.type == "thinking":
+            cur = state.setdefault("cur_round", {})
+            self._append_cur_round_text_item(cur, "thinking", delta.content)
+            await self._broadcast(conversation_id, {
+                "type": "subagent_delta",
+                "subagent_id": sub_id,
+                "delta_type": "thinking",
+                "content": delta.content,
+                "conversation_id": conversation_id,
+            })
+            return
+
+        if delta.type == "content" and isinstance(delta.content, str):
+            cur = state.setdefault("cur_round", {})
+            self._append_cur_round_text_item(cur, "content", delta.content)
+            await self._broadcast(conversation_id, {
+                "type": "subagent_delta",
+                "subagent_id": sub_id,
+                "delta_type": "content",
+                "content": delta.content,
+                "conversation_id": conversation_id,
+            })
+            return
+
+        if delta.type == "tool_call" and isinstance(delta.content, ToolCallRequest):
+            tc = delta.content
+            tc_dict: dict[str, Any] = {
+                "index": tc.index, "id": tc.id, "name": tc.name,
+                "arguments": tc.arguments, "partial": tc.partial,
+            }
+
+            if tc.partial:
+                cur = state.setdefault("cur_round", {})
+                self._append_cur_round_tool_delta_item(cur, tc_dict)
+                await self._broadcast(conversation_id, {
+                    "type": "subagent_delta",
+                    "subagent_id": sub_id,
+                    "delta_type": "tool_call",
+                    "content": tc_dict,
+                    "conversation_id": conversation_id,
+                })
+                return
+
+            # Complete tool call — commit round
+            cur = state.pop("cur_round", {})
+            state["segments"].extend(
+                self._cur_round_to_subagent_replay(conversation_id, sub_id, cur)
+            )
+            payload: dict[str, Any] = {
+                "type": "subagent_delta",
+                "subagent_id": sub_id,
+                "delta_type": "tool_call",
+                "content": tc_dict,
+                "conversation_id": conversation_id,
+            }
+            state["segments"].append(payload)
+            state["cur_round"] = {}
+            await self._broadcast(conversation_id, payload)
+
+    @staticmethod
+    def _cur_round_to_subagent_replay(
+        conversation_id: str, sub_id: str, cur: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Convert a subagent's current round into replay payloads."""
+        payloads: list[dict[str, Any]] = []
+        for item in cur.get("items", []):
+            kind = item.get("kind")
+            if kind == "thinking" and item.get("content"):
+                payloads.append({
+                    "type": "subagent_delta",
+                    "subagent_id": sub_id,
+                    "delta_type": "thinking",
+                    "content": item["content"],
+                    "conversation_id": conversation_id,
+                })
+            elif kind == "content" and item.get("content"):
+                payloads.append({
+                    "type": "subagent_delta",
+                    "subagent_id": sub_id,
+                    "delta_type": "content",
+                    "content": item["content"],
+                    "conversation_id": conversation_id,
+                })
+            elif kind == "tool_delta" and item.get("content"):
+                payloads.append({
+                    "type": "subagent_delta",
+                    "subagent_id": sub_id,
+                    "delta_type": "tool_call",
+                    "content": item["content"],
+                    "conversation_id": conversation_id,
+                })
+        return payloads
 
     async def deliver(self, msg: OutboundMessage) -> None:
         """Not used — nekochat overrides send() for real-time streaming."""
@@ -465,10 +648,18 @@ class NekoChatChannel(BaseChannel):
         app.router.add_post("/api/conversations", self._handle_new_conversation)
         app.router.add_get("/api/conversations/{conversation_id}/history", self._handle_history)
         app.router.add_delete("/api/conversations/{conversation_id}", self._handle_delete_conversation)
-        app.router.add_post("/api/conversations/{conversation_id}/message", self._handle_message)
-        app.router.add_post("/api/conversations/{conversation_id}/command", self._handle_command)
+        app.router.add_post("/api/conversations/{conversation_id}/message", self._handle_http_message)
+        app.router.add_get("/api/subagent/{session_id}/history", self._handle_subagent_history)
+        app.router.add_post("/api/upload", self._handle_upload)
         app.router.add_get("/file/{token}", self._handle_file)
         app.router.add_get("/assets/{path:.*}", self._handle_assets)
+        # Runtime manager (provider config + skills)
+        app.router.add_get("/api/manager/config/openai", self._handle_get_openai_config)
+        app.router.add_put("/api/manager/config/openai", self._handle_set_openai_config)
+        app.router.add_get("/api/manager/skills", self._handle_list_skills)
+        app.router.add_post("/api/manager/skills/upload", self._handle_upload_skill)
+        app.router.add_post("/api/manager/skills/{name}/enable", self._handle_enable_skill)
+        app.router.add_post("/api/manager/skills/{name}/disable", self._handle_disable_skill)
 
     # ------------------------------------------------------------------
     # HTTP handlers
@@ -490,6 +681,36 @@ class NekoChatChannel(BaseChannel):
             mime, _ = mimetypes.guess_type(str(path))
             return aiohttp_web.FileResponse(path, headers={"Content-Type": mime or "application/octet-stream"})
         return aiohttp_web.Response(text="Not found", status=404)
+
+    async def _handle_upload(self, request: Any) -> Any:
+        """Accept multipart file uploads, cache them, and return /file/{token} URLs."""
+        import hashlib
+        try:
+            reader = await request.multipart()
+        except Exception:
+            return aiohttp_web.json_response({"error": "expected multipart/form-data"}, status=400)
+
+        urls: list[str] = []
+        cache_dir = _get_file_cache_dir()
+
+        async for part in reader:
+            filename = part.filename
+            if not filename:
+                continue
+            try:
+                data = await part.read()
+                token = hashlib.sha1(data).hexdigest()[:16]
+                safe_name = Path(filename).name
+                cached = cache_dir / f"{token}_{safe_name}"
+                if not cached.exists():
+                    cached.write_bytes(data)
+                    logger.debug("Upload cached: token={} name={}", token, safe_name)
+                _file_registry[token] = cached
+                urls.append(f"/file/{token}?name={quote(safe_name)}")
+            except Exception as exc:
+                logger.warning("Failed to cache uploaded file {}: {}", filename, exc)
+
+        return aiohttp_web.json_response({"urls": urls})
 
     async def _handle_file(self, request: Any) -> Any:
         """Serve a cached file by its content-hash token."""
@@ -573,12 +794,65 @@ class NekoChatChannel(BaseChannel):
         messages = self._read_session_messages(cid)
         return aiohttp_web.json_response({"history": self._session_to_ui(cid, messages)})
 
+    async def _handle_subagent_history(self, request: Any) -> Any:
+        """Return the message history for a subagent session."""
+        session_id = request.match_info["session_id"]
+        messages = self._read_subagent_session_messages(session_id)
+        ui = self._subagent_session_to_ui(messages)
+        return aiohttp_web.json_response({"history": ui})
+
+    @staticmethod
+    def _read_subagent_session_messages(session_id: str) -> list[dict[str, Any]]:
+        """Read raw messages from a subagent session JSONL."""
+        from nekoclaw.config.paths import get_sessions_dir
+        from nekoclaw.utils.helpers import safe_filename
+        safe_key = safe_filename(session_id.replace(":", "_"))
+        path = get_sessions_dir() / f"{safe_key}.jsonl"
+        if not path.exists():
+            return []
+        messages: list[dict[str, Any]] = []
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    if data.get("_type") == "metadata":
+                        continue
+                    messages.append(data)
+        except Exception as exc:
+            logger.warning("Failed to read subagent session {}: {}", session_id, exc)
+        return messages
+
+    @staticmethod
+    def _subagent_session_to_ui(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Translate subagent session entries into UI-format items for the card."""
+        ui: list[dict[str, Any]] = []
+        for m in messages:
+            dtype = m.get("type")
+            raw = m.get("content", "")
+            if dtype == "thinking":
+                text = (raw or "").strip() if isinstance(raw, str) else ""
+                if text:
+                    ui.append({"type": "think", "content": text})
+            elif dtype == "content":
+                if raw:
+                    ui.append({"type": "content", "role": "assistant", "content": raw})
+            elif dtype == "tool_call":
+                tc = raw if isinstance(raw, dict) else {}
+                name = tc.get("name", "tool")
+                args = tc.get("arguments", {})
+                args_str = json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
+                ui.append({"type": "tool_call", "content": f"{name}({args_str})"})
+        return ui
+
     async def _handle_delete_conversation(self, request: Any) -> Any:
         cid = request.match_info["conversation_id"]
         self._active_streams.discard(cid)
         return aiohttp_web.json_response({"ok": True})
 
-    async def _handle_message(self, request: Any) -> Any:
+    async def _handle_http_message(self, request: Any) -> Any:
         cid = request.match_info["conversation_id"]
         try:
             data = await request.json()
@@ -601,18 +875,36 @@ class NekoChatChannel(BaseChannel):
         await self._handle_message_internal(cid, content, media)
         return aiohttp_web.json_response({"ok": True})
 
-    async def _handle_command(self, request: Any) -> Any:
-        cid = request.match_info["conversation_id"]
-        try:
-            data = await request.json()
-        except Exception:
-            return aiohttp_web.json_response({"error": "invalid JSON"}, status=400)
+    def _resolve_user_media(self, media: list[str]) -> list[str]:
+        """Resolve /file/{token} URLs to their cached filesystem paths.
 
-        cmd = (data.get("command") or "").strip()
-        if not cmd.startswith("/"):
-            cmd = "/" + cmd
-        await self._handle_message_internal(cid, cmd, [])
-        return aiohttp_web.json_response({"ok": True})
+        The agent's context builder expects local file paths so it can read
+        and inline media.  Upload URLs produced by _handle_upload and the
+        frontend are mapped back to their cache entries here before the
+        InboundMessage is published.  External URLs are passed through unchanged.
+        """
+        resolved: list[str] = []
+        for m in media:
+            if m.startswith("/file/"):
+                # Strip leading '/file/' and query string to get the token
+                token = m[len("/file/"):].split("?")[0]
+                file_path = _file_registry.get(token)
+                if file_path is None:
+                    try:
+                        cache_dir = _get_file_cache_dir()
+                        matches = list(cache_dir.glob(f"{token}_*"))
+                        if matches:
+                            file_path = matches[0]
+                            _file_registry[token] = file_path
+                    except Exception:
+                        pass
+                if file_path and file_path.exists():
+                    resolved.append(str(file_path))
+                else:
+                    logger.warning("Could not resolve media token={} — skipping", token)
+            else:
+                resolved.append(m)
+        return resolved
 
     async def _handle_message_internal(
         self, conversation_id: str, content: str, media: list[str]
@@ -620,23 +912,19 @@ class NekoChatChannel(BaseChannel):
         self._active_streams.add(conversation_id)
         self._stream_segments[conversation_id] = []
         self._cur_round[conversation_id] = {
-            # Keep the in-flight user message available for reconnect replay.
-            # Slash commands are not rendered as user bubbles in the web UI.
-            **(
-                {"pending_user": {"content": content, "media": media}}
-                if (content or media) and not content.startswith("/")
-                else {}
-            ),
+            **({"pending_user": {"content": content, "media": media}} if (content or media) else {}),
         }
         await self._broadcast(conversation_id, {
             "type": "stream_start",
             "conversation_id": conversation_id,
         })
+        # Resolve /file/{token} URLs → real filesystem paths for the agent
+        agent_media = self._resolve_user_media(media)
         await self._handle_message(
             sender_id="user",
             chat_id=conversation_id,
             content=content,
-            media=media,
+            media=agent_media,
             metadata={"conversation_id": conversation_id, "_streaming": True},
         )
 
@@ -707,6 +995,36 @@ class NekoChatChannel(BaseChannel):
                 except Exception:
                     break
 
+        # Replay only *running* subagents from in-memory state.
+        # Completed subagents are already persisted as subagent_ref entries
+        # in the session JSONL and were replayed with the history above.
+        for sub_id, state in list(self._subagent_state.get(cid, {}).items()):
+            if state.get("status") != "running":
+                continue
+
+            try:
+                await ws.send_str(json.dumps({
+                    "type": "subagent_start",
+                    "subagent_id": sub_id,
+                    "label": state.get("label", sub_id),
+                    "conversation_id": cid,
+                    "_replay": True,
+                }, ensure_ascii=False))
+            except Exception:
+                break
+
+            for seg in state.get("segments", []):
+                try:
+                    await ws.send_str(json.dumps(seg, ensure_ascii=False))
+                except Exception:
+                    break
+
+            for payload in self._cur_round_to_subagent_replay(cid, sub_id, state.get("cur_round", {})):
+                try:
+                    await ws.send_str(json.dumps(payload, ensure_ascii=False))
+                except Exception:
+                    break
+
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
@@ -729,12 +1047,6 @@ class NekoChatChannel(BaseChannel):
                                 "conversation_id": cid,
                             })
                             await self._handle_message_internal(cid, content, media)
-                    elif msg_type == "command":
-                        cmd = (data.get("command") or "").strip()
-                        if cmd:
-                            if not cmd.startswith("/"):
-                                cmd = "/" + cmd
-                            await self._handle_message_internal(cid, cmd, [])
                 elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
                     break
         finally:
@@ -742,6 +1054,139 @@ class NekoChatChannel(BaseChannel):
             logger.debug("WebSocket disconnected for conversation {}", cid)
 
         return ws
+
+    # ------------------------------------------------------------------
+    # Manager API — runtime config + skills
+    # ------------------------------------------------------------------
+
+    async def _handle_get_openai_config(self, request: Any) -> Any:
+        from nekoclaw.manager.config import get_openai_provider_config
+        try:
+            cfg = get_openai_provider_config()
+        except Exception as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=500)
+        return aiohttp_web.json_response({"provider": cfg})
+
+    async def _handle_set_openai_config(self, request: Any) -> Any:
+        from nekoclaw.manager.config import set_openai_provider_config
+        try:
+            data = await request.json()
+        except Exception:
+            return aiohttp_web.json_response({"error": "invalid JSON"}, status=400)
+
+        if not isinstance(data, dict):
+            return aiohttp_web.json_response({"error": "expected object"}, status=400)
+
+        api_key = data.get("api_key") if "api_key" in data else None
+        api_base = data.get("api_base") if "api_base" in data else None
+        extra = data.get("extra_headers") if "extra_headers" in data else None
+        if extra is not None and not isinstance(extra, dict):
+            return aiohttp_web.json_response({"error": "extra_headers must be an object"}, status=400)
+
+        try:
+            cfg = set_openai_provider_config(
+                api_key=api_key,
+                api_base=api_base,
+                extra_headers=extra,
+            )
+        except Exception as exc:
+            logger.warning("Failed to update OpenAI provider config: {}", exc)
+            return aiohttp_web.json_response({"error": str(exc)}, status=500)
+
+        return aiohttp_web.json_response({"provider": cfg})
+
+    async def _handle_list_skills(self, request: Any) -> Any:
+        from nekoclaw.manager.skill import list_skills
+        try:
+            return aiohttp_web.json_response({"skills": list_skills()})
+        except Exception as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_enable_skill(self, request: Any) -> Any:
+        from nekoclaw.manager.skill import enable_skill
+        name = request.match_info["name"]
+        try:
+            info = enable_skill(name)
+        except FileNotFoundError as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=404)
+        except (ValueError, FileExistsError) as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.warning("Failed to enable skill {}: {}", name, exc)
+            return aiohttp_web.json_response({"error": str(exc)}, status=500)
+        return aiohttp_web.json_response({"skill": info})
+
+    async def _handle_disable_skill(self, request: Any) -> Any:
+        from nekoclaw.manager.skill import disable_skill
+        name = request.match_info["name"]
+        try:
+            info = disable_skill(name)
+        except FileNotFoundError as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=404)
+        except ValueError as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.warning("Failed to disable skill {}: {}", name, exc)
+            return aiohttp_web.json_response({"error": str(exc)}, status=500)
+        return aiohttp_web.json_response({"skill": info})
+
+    async def _handle_upload_skill(self, request: Any) -> Any:
+        """Accept a zipped skill upload and install it to the workspace skills dir."""
+        import tempfile
+        from nekoclaw.manager.skill import add_skill_from_zip
+
+        try:
+            reader = await request.multipart()
+        except Exception:
+            return aiohttp_web.json_response({"error": "expected multipart/form-data"}, status=400)
+
+        tmp_path: Path | None = None
+        override_name: str | None = None
+        async for part in reader:
+            if part.name == "name":
+                try:
+                    override_name = (await part.text()).strip() or None
+                except Exception:
+                    override_name = None
+                continue
+            filename = part.filename
+            if not filename:
+                continue
+            if not filename.lower().endswith(".zip"):
+                return aiohttp_web.json_response(
+                    {"error": "skill upload must be a .zip archive"}, status=400
+                )
+            tmp_fd = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+            try:
+                while True:
+                    chunk = await part.read_chunk(64 * 1024)
+                    if not chunk:
+                        break
+                    tmp_fd.write(chunk)
+            finally:
+                tmp_fd.close()
+            tmp_path = Path(tmp_fd.name)
+            break
+
+        if tmp_path is None:
+            return aiohttp_web.json_response({"error": "no file uploaded"}, status=400)
+
+        try:
+            info = add_skill_from_zip(tmp_path, name=override_name)
+        except FileExistsError as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=409)
+        except (ValueError, FileNotFoundError) as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.warning("Failed to install uploaded skill: {}", exc)
+            return aiohttp_web.json_response({"error": str(exc)}, status=500)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        return aiohttp_web.json_response({"skill": info})
 
     # Override BaseChannel._handle_message to skip allow_from check for "user"
     # since all access is local — defer to config.allow_from only if it has entries.

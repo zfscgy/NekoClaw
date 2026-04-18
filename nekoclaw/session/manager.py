@@ -1,6 +1,7 @@
 """Session management for conversation history."""
 
 import json
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,10 @@ class Session:
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
     last_consolidated: int = 0  # Number of messages already consolidated to files
+    initial_messages: list[StreamDelta] = field(default_factory=list)  # transient: current-turn context
+
+    def __post_init__(self) -> None:
+        self._save_offset: int = 0  # transient: how many initial_messages have been flushed to self.messages
 
     def get_history(self, max_messages: int = 500) -> list[StreamDelta]:
         """Return unconsolidated messages, aligned to a user turn."""
@@ -66,6 +71,26 @@ class SessionManager:
         """Get the file path for a session."""
         safe_key = safe_filename(key.replace(":", "_"))
         return self.sessions_dir / f"{safe_key}.jsonl"
+
+    def get_media_dir(self, key: str) -> Path:
+        """Return (and create) the media directory for a session."""
+        safe_key = safe_filename(key.replace(":", "_"))
+        media_dir = self.sessions_dir / safe_key
+        media_dir.mkdir(parents=True, exist_ok=True)
+        return media_dir
+
+    def save_media(self, session_key: str, src: str | Path) -> Path:
+        """Copy *src* into the session's media directory and return the destination path.
+
+        If *src* is already inside the session media directory, it is returned
+        unchanged.  Missing source files raise ``FileNotFoundError``.
+        """
+        src = Path(src)
+        dest_dir = self.get_media_dir(session_key)
+        dest = dest_dir / src.name
+        if src.resolve() != dest.resolve():
+            shutil.copy2(src, dest)
+        return dest
 
     def get_or_create(self, key: str) -> Session:
         """

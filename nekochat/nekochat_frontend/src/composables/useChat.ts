@@ -22,6 +22,7 @@ export interface ChatMessage {
   media?: string[]
   conversation_id?: string
   _replay?: boolean
+  time?: string
 }
 
 interface ToolCallSlot {
@@ -44,6 +45,7 @@ export interface ContentGroup {
   media: string[]
   appendCursor?: boolean
   streamStatus?: StreamStatus
+  time?: string
 }
 
 export interface ActionsGroup {
@@ -69,11 +71,23 @@ interface ToolCallPayload {
 // Streaming deltas carry `_delta: true`; session-replay entries carry `_replay: true`.
 type WsMessage =
   | { type: 'stream_start'; conversation_id?: string }
-  | { type: 'stream_end'; conversation_id?: string }
+  | { type: 'stream_end'; conversation_id?: string; time?: string }
   | { type: 'thinking'; content?: string; conversation_id?: string; _delta?: boolean }
-  | { type: 'content'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean }
+  | { type: 'content'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean; time?: string }
   | { type: 'think'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
   | { type: 'tool_call'; role?: string; content?: string | ToolCallPayload; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean }
+  | { type: 'subagent_start'; subagent_id: string; label: string; conversation_id?: string; _replay?: boolean }
+  | { type: 'subagent_delta'; subagent_id: string; delta_type: 'thinking' | 'content' | 'tool_call'; content?: string | ToolCallPayload; conversation_id?: string }
+  | { type: 'subagent_end'; subagent_id: string; status: string; conversation_id?: string }
+  | { type: 'subagent_ref'; session_id: string; label: string; status: string; task?: string; conversation_id?: string; _replay?: boolean }
+
+export interface SubagentState {
+  id: string
+  label: string
+  status: 'running' | 'ok' | 'error'
+  items: ChatMessage[]
+  sessionId?: string
+}
 
 // ── Private helpers ────────────────────────────────────────────────
 
@@ -158,6 +172,11 @@ export function useChat() {
   const lightboxSrc = ref<string | null>(null)
   const messagesEl = ref<HTMLElement | null>(null)
   const groupOpenState = ref<Record<string, boolean>>({})
+  const subagents = ref<Record<string, SubagentState[]>>({})
+
+  const currentSubagents = computed<SubagentState[]>(() =>
+    activeId.value ? (subagents.value[activeId.value] || []) : []
+  )
 
   const wsStatusLabel = computed(() => WS_STATUS[wsStatus.value])
 
@@ -205,7 +224,7 @@ export function useChat() {
           const prev = groups[groups.length - 1]
           if (prev.type === 'actions' && _openCache[prev.key] !== false) pendingOpen[prev.key] = false
         }
-        groups.push({ type: 'content', role: m.role, content: m.content, media: m.media || [] })
+        groups.push({ type: 'content', role: m.role, content: m.content, media: m.media || [], time: m.time })
         i++
       }
     }
@@ -291,6 +310,26 @@ export function useChat() {
     if (c) c.preview = (content || '').slice(0, 80)
   }
 
+  // ── Subagent history fetch ────────────────────────────────────────
+
+  async function _fetchSubagentHistory(sessionId: string, cid: string): Promise<void> {
+    try {
+      const res = await fetch(`/api/subagent/${encodeURIComponent(sessionId)}/history`)
+      if (!res.ok) return
+      const data = await res.json() as { history?: ChatMessage[] }
+      const plainId = sessionId.replace(/^subagent:/, '')
+      const subs = subagents.value[cid] || []
+      const sub = subs.find(s => s.sessionId === sessionId || s.id === plainId)
+      if (sub && data.history) {
+        sub.items = data.history
+        sub.sessionId = sessionId
+        subagents.value = { ...subagents.value }
+      }
+    } catch {
+      // ignore fetch errors
+    }
+  }
+
   // ── WebSocket ──────────────────────────────────────────────────────
 
   function _closeWs(): void {
@@ -338,6 +377,14 @@ export function useChat() {
           for (let i = _roundStart; i < arr.length; i++) {
             const converted = _tryConvertMessageToolCall(arr[i], cid)
             if (converted) arr[i] = converted
+          }
+          if (msg.time) {
+            for (let i = arr.length - 1; i >= _roundStart; i--) {
+              if (arr[i].type === 'content' && arr[i].role === 'assistant') {
+                arr[i] = { ...arr[i], time: msg.time }
+                break
+              }
+            }
           }
           isStreaming.value = false
           streamActive.value = false
@@ -397,6 +444,80 @@ export function useChat() {
           }
           break
         }
+
+        case 'subagent_start': {
+          const sid = (msg as { subagent_id: string; label: string }).subagent_id
+          const label = (msg as { subagent_id: string; label: string }).label
+          if (!subagents.value[cid]) subagents.value[cid] = []
+          const sessionKey = `subagent:${sid}`
+          const existing = subagents.value[cid].find(s => s.id === sid || s.sessionId === sessionKey)
+          if (!existing) {
+            subagents.value[cid].push({ id: sid, label, status: 'running', items: [] })
+            subagents.value = { ...subagents.value }
+          }
+          break
+        }
+
+        case 'subagent_delta': {
+          const sdMsg = msg as { subagent_id: string; delta_type: string; content?: string | ToolCallPayload }
+          const subs = subagents.value[cid] || []
+          const sub = subs.find(s => s.id === sdMsg.subagent_id)
+          if (sub) {
+            if (sdMsg.delta_type === 'thinking') {
+              _appendStreamText(sub.items, 'think', undefined, (sdMsg.content as string) || '')
+            } else if (sdMsg.delta_type === 'content') {
+              _appendStreamText(sub.items, 'content', 'assistant', (sdMsg.content as string) || '')
+            } else if (sdMsg.delta_type === 'tool_call') {
+              const tcPayload = sdMsg.content as ToolCallPayload
+              if (tcPayload && typeof tcPayload === 'object') {
+                const formatted = _formatToolCall({ name: tcPayload.name || '', arguments: _stringifyToolArguments(tcPayload.arguments) })
+                if (!tcPayload.partial) {
+                  sub.items.push({ type: 'tool_call', content: formatted, conversation_id: cid })
+                } else {
+                  _appendStreamText(sub.items, 'tool_call', undefined, '')
+                  const last = sub.items[sub.items.length - 1]
+                  if (last) last.content = formatted
+                }
+              }
+            }
+            subagents.value = { ...subagents.value }
+          }
+          break
+        }
+
+        case 'subagent_end': {
+          const seMsg = msg as { subagent_id: string; status: string; session_id?: string }
+          const subs2 = subagents.value[cid] || []
+          const sub2 = subs2.find(s => s.id === seMsg.subagent_id)
+          if (sub2) {
+            sub2.status = seMsg.status as 'ok' | 'error'
+            if (seMsg.session_id) sub2.sessionId = seMsg.session_id
+            subagents.value = { ...subagents.value }
+          }
+          break
+        }
+
+        case 'subagent_ref': {
+          const refMsg = msg as { session_id: string; label: string; status: string; task?: string }
+          if (!subagents.value[cid]) subagents.value[cid] = []
+          const plainId = refMsg.session_id.replace(/^subagent:/, '')
+          const existing = subagents.value[cid].find(s =>
+            s.id === plainId || s.sessionId === refMsg.session_id
+          )
+          if (!existing) {
+            const sub: SubagentState = {
+              id: plainId,
+              label: refMsg.label || refMsg.session_id,
+              status: (refMsg.status as 'ok' | 'error') || 'ok',
+              items: [],
+              sessionId: refMsg.session_id,
+            }
+            subagents.value[cid].push(sub)
+            subagents.value = { ...subagents.value }
+            _fetchSubagentHistory(refMsg.session_id, cid)
+          }
+          break
+        }
       }
       scrollToBottom()
     }
@@ -449,6 +570,7 @@ export function useChat() {
     for (const k of Object.keys(_openCache)) delete _openCache[k]
     groupOpenState.value = {}
     messagesByConv.value[id] = []
+    subagents.value[id] = []
     connectWs(id)
     nextTick(scrollToBottom)
   }
@@ -465,11 +587,11 @@ export function useChat() {
     }
   }
 
-  async function sendMessage(): Promise<void> {
+  async function sendMessage(media: string[] = []): Promise<void> {
     const text = inputText.value.trim()
-    if (!text || !activeId.value || isTyping.value) return
+    if (!text && !media.length || !activeId.value || isTyping.value) return
 
-    if (text.startsWith('/')) {
+    if (text.startsWith('/') && !media.length) {
       inputText.value = ''
       sendCommand(text.slice(1))
       return
@@ -482,7 +604,7 @@ export function useChat() {
 
     const cid = activeId.value
     messagesByConv.value[cid].push({
-      type: 'content', role: 'user', content: text, media: [], conversation_id: cid,
+      type: 'content', role: 'user', content: text, media, conversation_id: cid,
     })
     scrollToBottom()
 
@@ -490,13 +612,13 @@ export function useChat() {
     if (c) c.preview = text.slice(0, 80)
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'content', content: text, media: [] }))
+      ws.send(JSON.stringify({ type: 'content', content: text, media }))
     } else {
       try {
         await fetch(`/api/conversations/${cid}/message`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: text, media: [] }),
+          body: JSON.stringify({ content: text, media }),
         })
       } catch {
         isTyping.value = false
@@ -576,6 +698,7 @@ export function useChat() {
     groupOpenState,
     setGroupOpen,
     messageGroups,
+    currentSubagents,
     newConversation,
     selectConversation,
     deleteConversation,

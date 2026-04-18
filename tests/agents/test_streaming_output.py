@@ -155,6 +155,7 @@ async def test_streaming_via_agent_loop():
 
     from nekoclaw.agent.loop import AgentLoop
     from nekoclaw.bus.queue import MessageBus
+    from nekoclaw.session.manager import Session
 
     provider, model, reasoning_effort = _load_real_provider()
 
@@ -165,6 +166,7 @@ async def test_streaming_via_agent_loop():
          patch("nekoclaw.agent.loop.SubagentManager") as MockSubMgr:
         MockSubMgr.return_value.cancel_by_session.return_value = 0
         loop = AgentLoop(
+            session=Session(key="test:default"),
             bus=bus,
             provider=provider,
             workspace=Path("/tmp"),

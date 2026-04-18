@@ -1,4 +1,7 @@
-- [ ] Fix the message duplication bug
-- [ ] Merging StreamDeltas in `on_delta`
-- [ ] Enable media sending/receiving
+- [x] Fix the message duplication bug
+- [x] Merging StreamDeltas in `on_delta`
+- [x] Enable media sending/receiving
+- [x] Subagent support on GUI
 - [ ] Python environment packing
+- [ ] Add timefield to StreamDelta
+- [ ] 

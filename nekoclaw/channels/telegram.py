@@ -8,8 +8,8 @@ import time
 import unicodedata
 
 from loguru import logger
-from telegram import BotCommand, ReplyParameters, Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import ReplyParameters, Update
+from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 from nekoclaw.bus.events import OutboundMessage
@@ -156,14 +156,6 @@ class TelegramChannel(BaseChannel):
 
     name = "telegram"
 
-    # Commands registered with Telegram's command menu
-    BOT_COMMANDS = [
-        BotCommand("start", "Start the bot"),
-        BotCommand("new", "Start a new conversation"),
-        BotCommand("stop", "Stop the current task"),
-        BotCommand("help", "Show available commands"),
-    ]
-
     def __init__(
         self,
         config: TelegramConfig,
@@ -219,12 +211,6 @@ class TelegramChannel(BaseChannel):
         self._app = builder.build()
         self._app.add_error_handler(self._on_error)
 
-        # Add command handlers
-        self._app.add_handler(CommandHandler("start", self._on_start))
-        self._app.add_handler(CommandHandler("new", self._forward_command))
-        self._app.add_handler(CommandHandler("stop", self._forward_command))
-        self._app.add_handler(CommandHandler("help", self._on_help))
-
         # Add message handler for text, photos, voice, documents
         self._app.add_handler(
             MessageHandler(
@@ -243,12 +229,6 @@ class TelegramChannel(BaseChannel):
         # Get bot info and register command menu
         bot_info = await self._app.bot.get_me()
         logger.info("Telegram bot @{} connected", bot_info.username)
-
-        try:
-            await self._app.bot.set_my_commands(self.BOT_COMMANDS)
-            logger.debug("Telegram bot commands registered")
-        except Exception as e:
-            logger.warning("Failed to register bot commands: {}", e)
 
         # Start polling (this runs until stopped)
         await self._app.updater.start_polling(
@@ -405,29 +385,6 @@ class TelegramChannel(BaseChannel):
             pass
         await self._send_text(chat_id, text, reply_params, thread_kwargs)
 
-    async def _on_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /start command."""
-        if not update.message or not update.effective_user:
-            return
-
-        user = update.effective_user
-        await update.message.reply_text(
-            f"👋 Hi {user.first_name}! I'm nekoclaw.\n\n"
-            "Send me a message and I'll respond!\n"
-            "Type /help to see available commands."
-        )
-
-    async def _on_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /help command, bypassing ACL so all users can access it."""
-        if not update.message:
-            return
-        await update.message.reply_text(
-            "🐈 nekoclaw commands:\n"
-            "/new — Start a new conversation\n"
-            "/stop — Stop the current task\n"
-            "/help — Show available commands"
-        )
-
     @staticmethod
     def _sender_id(user) -> str:
         """Build sender_id with username for allowlist matching."""
@@ -464,21 +421,6 @@ class TelegramChannel(BaseChannel):
         self._message_threads[key] = message_thread_id
         if len(self._message_threads) > 1000:
             self._message_threads.pop(next(iter(self._message_threads)))
-
-    async def _forward_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Forward slash commands to the bus for unified handling in AgentLoop."""
-        if not update.message or not update.effective_user:
-            return
-        message = update.message
-        user = update.effective_user
-        self._remember_thread_context(message)
-        await self._handle_message(
-            sender_id=self._sender_id(user),
-            chat_id=str(message.chat_id),
-            content=message.text,
-            metadata=self._build_message_metadata(message, user),
-            session_key=self._derive_topic_session_key(message),
-        )
 
     async def _on_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming messages (text, photos, voice, documents)."""
