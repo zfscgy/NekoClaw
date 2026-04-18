@@ -653,9 +653,9 @@ class NekoChatChannel(BaseChannel):
         app.router.add_post("/api/upload", self._handle_upload)
         app.router.add_get("/file/{token}", self._handle_file)
         app.router.add_get("/assets/{path:.*}", self._handle_assets)
-        # Runtime manager (provider config + skills)
-        app.router.add_get("/api/manager/config/openai", self._handle_get_openai_config)
-        app.router.add_put("/api/manager/config/openai", self._handle_set_openai_config)
+        # Runtime manager (generic config get/set + skills)
+        app.router.add_get("/api/manager/config", self._handle_get_config)
+        app.router.add_put("/api/manager/config", self._handle_set_config)
         app.router.add_get("/api/manager/skills", self._handle_list_skills)
         app.router.add_post("/api/manager/skills/upload", self._handle_upload_skill)
         app.router.add_post("/api/manager/skills/{name}/enable", self._handle_enable_skill)
@@ -1059,41 +1059,56 @@ class NekoChatChannel(BaseChannel):
     # Manager API — runtime config + skills
     # ------------------------------------------------------------------
 
-    async def _handle_get_openai_config(self, request: Any) -> Any:
-        from nekoclaw.manager.config import get_openai_provider_config
-        try:
-            cfg = get_openai_provider_config()
-        except Exception as exc:
-            return aiohttp_web.json_response({"error": str(exc)}, status=500)
-        return aiohttp_web.json_response({"provider": cfg})
+    async def _handle_get_config(self, request: Any) -> Any:
+        """Return the full runtime config dict and its JSON schema.
 
-    async def _handle_set_openai_config(self, request: Any) -> Any:
-        from nekoclaw.manager.config import set_openai_provider_config
+        ``?key=providers.openai.api_key`` returns only that value.
+        """
+        from nekoclaw.manager.config import get as cfg_get
+        from nekoclaw.manager.config import schema as cfg_schema
+
+        key = request.rel_url.query.get("key")
         try:
-            data = await request.json()
+            if key:
+                return aiohttp_web.json_response({"key": key, "value": cfg_get(key)})
+            return aiohttp_web.json_response({
+                "config": cfg_get(),
+                "schema": cfg_schema(),
+            })
+        except KeyError as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=404)
+        except Exception as exc:
+            logger.warning("Failed to read config: {}", exc)
+            return aiohttp_web.json_response({"error": str(exc)}, status=500)
+
+    async def _handle_set_config(self, request: Any) -> Any:
+        """Apply a ``{key, value}`` mutation and return the refreshed config."""
+        from nekoclaw.manager.config import get as cfg_get
+        from nekoclaw.manager.config import set as cfg_set
+
+        try:
+            body = await request.json()
         except Exception:
             return aiohttp_web.json_response({"error": "invalid JSON"}, status=400)
 
-        if not isinstance(data, dict):
-            return aiohttp_web.json_response({"error": "expected object"}, status=400)
-
-        api_key = data.get("api_key") if "api_key" in data else None
-        api_base = data.get("api_base") if "api_base" in data else None
-        extra = data.get("extra_headers") if "extra_headers" in data else None
-        if extra is not None and not isinstance(extra, dict):
-            return aiohttp_web.json_response({"error": "extra_headers must be an object"}, status=400)
-
-        try:
-            cfg = set_openai_provider_config(
-                api_key=api_key,
-                api_base=api_base,
-                extra_headers=extra,
+        if not isinstance(body, dict) or not isinstance(body.get("key"), str):
+            return aiohttp_web.json_response(
+                {"error": "expected object with a 'key' string"}, status=400
             )
+
+        key = body["key"]
+        value = body.get("value")
+        try:
+            cfg_set(key, value)
+        except KeyError as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=404)
+        except (ValueError, TypeError) as exc:
+            return aiohttp_web.json_response({"error": str(exc)}, status=400)
         except Exception as exc:
-            logger.warning("Failed to update OpenAI provider config: {}", exc)
+            logger.warning("Failed to set config {}: {}", key, exc)
             return aiohttp_web.json_response({"error": str(exc)}, status=500)
 
-        return aiohttp_web.json_response({"provider": cfg})
+        return aiohttp_web.json_response({"key": key, "config": cfg_get()})
 
     async def _handle_list_skills(self, request: Any) -> Any:
         from nekoclaw.manager.skill import list_skills
