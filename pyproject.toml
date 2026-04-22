@@ -84,14 +84,12 @@ include = [
 [tool.hatch.build.targets.sdist]
 include = [
     "nekoclaw/",
-    "bridge/",
     "nekochat/",
     "README.md",
     "LICENSE",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
-"bridge" = "nekoclaw/bridge"
 "nekochat" = "nekochat"
 
 [tool.ruff]

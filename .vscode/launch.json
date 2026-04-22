@@ -14,7 +14,8 @@
             "cwd": "${workspaceFolder}",
             "justMyCode": false,
             "env": {
-                "PYTHONPATH": "${workspaceFolder}"
+                "PYTHONPATH": "${workspaceFolder}",
+                "HTTPS_PROXY": "http://127.0.0.1:10808"
             }
         }
     ]

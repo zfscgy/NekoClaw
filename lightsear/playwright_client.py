@@ -85,11 +85,19 @@ class _AsyncBrowserRuntime:
     async def _shutdown(self) -> None:
         self._context = None
         if self._browser is not None:
-            # close() only disconnects Playwright; it does not kill the browser process
-            await self._browser.close()
+            # close() only disconnects Playwright; it does not kill the browser process.
+            # Tolerate a dead CDP connection (e.g. user closed the browser) so
+            # the runtime can still be torn down cleanly.
+            try:
+                await self._browser.close()
+            except Exception as exc:  # pragma: no cover - defensive cleanup
+                logger.debug("Ignoring browser.close() error during shutdown: %s", exc)
             self._browser = None
         if self._playwright is not None:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception as exc:  # pragma: no cover - defensive cleanup
+                logger.debug("Ignoring playwright.stop() error during shutdown: %s", exc)
             self._playwright = None
 
     def submit(self, coro: "asyncio.coroutines") -> cf.Future[t.Any]:

@@ -91,7 +91,9 @@ def gateway(
     cfg = _load_runtime_config(config, workspace)
 
     console.print(f"{__logo__} Starting nekoclaw gateway on port {port}...")
-    sync_workspace_templates(cfg.workspace_path)
+    sync_workspace_templates(
+        cfg.workspace_path, template_locale=cfg.agents.defaults.template_locale
+    )
     bus = MessageBus()
     provider = _make_provider(cfg)
 

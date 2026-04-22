@@ -57,6 +57,10 @@ class AgentDefaults(Base):
     """Default agent configuration."""
 
     workspace: str = (Path.home() / ".nekoclaw/workspace").as_posix()
+    template_locale: Literal["en", "cn"] = Field(
+        default="en",
+        description="Locale for bundled workspace templates synced on startup (en or cn).",
+    )
     model: str = "gpt-4o"
     max_tokens: int = 8192
     temperature: float = 0.1
@@ -113,7 +117,7 @@ class WebToolsConfig(Base):
         None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     )
     headless: bool = False
-    chrome_executable_path: str | None = None
+    chrome_executable_path: str | None = "./resources/chrome/chrome-win64/chrome.exe"
     user_data_dir: str = (Path.home() / ".nekoclaw/browser_data").as_posix()
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 

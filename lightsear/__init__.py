@@ -4,6 +4,7 @@ import atexit
 import logging
 import subprocess
 import sys
+import threading
 import time
 import typing as t
 import urllib.error
@@ -35,6 +36,8 @@ ENGINES: dict[str, t.Callable[[t.Any, str], list[SearchResult]]] = {
 
 _pool: SessionPool | None = None
 _chromium_proc: subprocess.Popen | None = None
+_launch_config: dict[str, t.Any] | None = None
+_restart_lock = threading.Lock()
 
 # Suppress the console window on Windows when spawning Chromium.
 _POPEN_FLAGS: dict[str, t.Any] = (
@@ -75,7 +78,19 @@ def initialize_pool(
     :param pool_size: Number of concurrent sessions (default: number of engines).
     :param startup_timeout: Seconds to wait for Chromium to become ready (default ``15.0``).
     """
-    global _pool, _chromium_proc
+    global _pool, _chromium_proc, _launch_config
+
+    _launch_config = {
+        "chrome_executable_path": chrome_executable_path,
+        "user_data_dir": user_data_dir,
+        "cdp_port": cdp_port,
+        "cdp_host": cdp_host,
+        "headless": headless,
+        "proxy": proxy,
+        "timeout": timeout,
+        "pool_size": pool_size,
+        "startup_timeout": startup_timeout,
+    }
 
     # Shut down any previously managed Chromium process.
     _stop_chromium()
@@ -118,6 +133,16 @@ def initialize_pool(
         old.close()
 
 
+def _is_cdp_alive(host: str, port: int, *, timeout: float = 1.0) -> bool:
+    """Return True if the CDP /json/version endpoint responds."""
+    endpoint = f"http://{host}:{port}/json/version"
+    try:
+        urllib.request.urlopen(endpoint, timeout=timeout)
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def _wait_for_cdp(host: str, port: int, startup_timeout: float, proc: subprocess.Popen) -> None:
     """Poll the CDP /json/version endpoint until Chromium is ready."""
     endpoint = f"http://{host}:{port}/json/version"
@@ -129,18 +154,39 @@ def _wait_for_cdp(host: str, port: int, startup_timeout: float, proc: subprocess
                 f"Chromium process exited unexpectedly (code {proc.returncode}) "
                 f"before the CDP endpoint became available at {endpoint}"
             )
-        try:
-            urllib.request.urlopen(endpoint, timeout=1)
+        if _is_cdp_alive(host, port):
             logger.debug("Chromium CDP ready at %s", endpoint)
             return
-        except (urllib.error.URLError, OSError):
-            pass
         if time.monotonic() >= deadline:
             proc.kill()
             raise RuntimeError(
                 f"Chromium did not become ready at {endpoint} within {startup_timeout}s"
             )
         time.sleep(0.25)
+
+
+def _ensure_chromium_alive() -> None:
+    """Restart Chromium and the session pool if the CDP port is unreachable.
+
+    Intended to recover when the user closes the browser window while the
+    process is still running; callers invoke this before dispatching work
+    that requires a live browser.
+    """
+    config = _launch_config
+    if config is None:
+        return
+    if _is_cdp_alive(config["cdp_host"], config["cdp_port"]):
+        return
+    with _restart_lock:
+        # Re-check under the lock so concurrent callers restart only once.
+        if _is_cdp_alive(config["cdp_host"], config["cdp_port"]):
+            return
+        logger.warning(
+            "CDP endpoint %s:%s is unreachable; restarting Chromium",
+            config["cdp_host"],
+            config["cdp_port"],
+        )
+        initialize_pool(**config)
 
 
 def _stop_chromium() -> None:
@@ -166,11 +212,12 @@ def _get_pool() -> SessionPool:
 
 
 def _close_pool() -> None:
-    global _pool
+    global _pool, _launch_config
     if _pool is not None:
         _pool.close()
         _pool = None
     _stop_chromium()
+    _launch_config = None
 
 
 atexit.register(_close_pool)
@@ -267,6 +314,7 @@ def search(
     :param parallel: Run engine searches concurrently when more than one source is used.
     """
     names = _validate_sources(sources)
+    _ensure_chromium_alive()
     raw, errors = _execute_search(_get_pool(), keyword, names, parallel=parallel)
 
     if errors and len(errors) == len(names):
@@ -324,6 +372,7 @@ def web_fetch(
     # can still import and use search-only APIs.
     from markdownify import markdownify as to_markdown
 
+    _ensure_chromium_alive()
     response = _get_pool().submit(_run_web_fetch, url, wait).result()
     html_text = response.body.decode("utf-8", errors="replace")
     cleaned_html = _strip_scripts_and_styles(html_text)

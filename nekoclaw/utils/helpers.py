@@ -68,14 +68,26 @@ def split_message(content: str, max_len: int = 2000) -> list[str]:
     return chunks
 
 
-def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]:
-    """Sync bundled templates to workspace. Only creates missing files."""
+def sync_workspace_templates(
+    workspace: Path, silent: bool = False, template_locale: str = "en"
+) -> list[str]:
+    """Sync bundled templates to workspace. Only creates missing files.
+
+    Templates live under ``nekoclaw/templates/<locale>/`` (e.g. ``en``, ``cn``).
+    Unknown or missing locales fall back to ``en``.
+    """
     from importlib.resources import files as pkg_files
     try:
         tpl = pkg_files("nekoclaw") / "templates"
     except Exception:
         return []
     if not tpl.is_dir():
+        return []
+
+    locale_dir = tpl / template_locale
+    if not locale_dir.is_dir():
+        locale_dir = tpl / "en"
+    if not locale_dir.is_dir():
         return []
 
     added: list[str] = []
@@ -87,10 +99,12 @@ def sync_workspace_templates(workspace: Path, silent: bool = False) -> list[str]
         dest.write_text(src.read_text(encoding="utf-8") if src else "", encoding="utf-8")
         added.append(str(dest.relative_to(workspace)))
 
-    for item in tpl.iterdir():
-        if item.name.endswith(".md"):
+    for item in locale_dir.iterdir():
+        if item.is_file() and item.name.endswith(".md"):
             _write(item, workspace / item.name)
-    _write(tpl / "memory" / "MEMORY.md", workspace / "memory" / "MEMORY.md")
+    mem_tpl = locale_dir / "memory" / "MEMORY.md"
+    if mem_tpl.is_file():
+        _write(mem_tpl, workspace / "memory" / "MEMORY.md")
     _write(None, workspace / "memory" / "HISTORY.md")
     (workspace / "skills").mkdir(exist_ok=True)
     (workspace / "desktop").mkdir(exist_ok=True)
