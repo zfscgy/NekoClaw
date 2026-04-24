@@ -1,6 +1,10 @@
 export interface ActionItem {
   type: string
   content?: string
+  toolCallId?: string
+  toolName?: string
+  toolResult?: string
+  toolArguments?: Record<string, unknown>
 }
 
 export function toolCallName(content: string): string {

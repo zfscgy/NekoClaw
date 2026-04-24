@@ -261,8 +261,26 @@ class NekoChatChannel(BaseChannel):
                 ui.append({
                     "type": "tool_call", "role": "assistant",
                     "content": f"{name}({args_str})", "media": [],
+                    "tool_call_id": tc.get("id", ""),
+                    "tool_name": name,
                     "conversation_id": cid,
                 })
+
+            elif dtype == "tool_call_results" and isinstance(raw, list):
+                results: list[dict[str, Any]] = []
+                for r in raw:
+                    if isinstance(r, dict):
+                        results.append({
+                            "tool_call_id": r.get("tool_call_id", ""),
+                            "name": r.get("name", ""),
+                            "content": r.get("content", ""),
+                        })
+                if results:
+                    ui.append({
+                        "type": "tool_call_results",
+                        "results": results,
+                        "conversation_id": cid,
+                    })
 
             elif dtype == "subagent_ref":
                 ref = raw if isinstance(raw, dict) else {}
@@ -312,7 +330,7 @@ class NekoChatChannel(BaseChannel):
 
     async def send(self, msg: OutboundMessage) -> None:
         """Push an outbound message to all WebSocket subscribers of the conversation."""
-        from nekoclaw.providers.base import ToolCallRequest
+        from nekoclaw.providers.base import ToolCallRequest, ToolCallResult
 
         conversation_id = msg.chat_id
         sub_id = msg.metadata.get("subagent_id")
@@ -408,6 +426,27 @@ class NekoChatChannel(BaseChannel):
             }
             segs.append(payload)
             await self._broadcast(conversation_id, payload)
+            return
+
+        if delta.type == "tool_call_results" and isinstance(delta.content, list):
+            results_payload = [
+                {
+                    "tool_call_id": r.tool_call_id,
+                    "name": r.name,
+                    "content": r.content,
+                }
+                for r in delta.content if isinstance(r, ToolCallResult)
+            ]
+            if not results_payload:
+                return
+            payload = {
+                "type": "tool_call_results",
+                "results": results_payload,
+                "conversation_id": conversation_id,
+            }
+            segs = self._stream_segments.setdefault(conversation_id, [])
+            segs.append(payload)
+            await self._broadcast(conversation_id, payload)
 
     # ------------------------------------------------------------------
     # Subagent message handling
@@ -415,7 +454,7 @@ class NekoChatChannel(BaseChannel):
 
     async def _send_subagent(self, msg: OutboundMessage, conversation_id: str, sub_id: str) -> None:
         """Route a subagent-tagged outbound message to WebSocket clients."""
-        from nekoclaw.providers.base import ToolCallRequest
+        from nekoclaw.providers.base import ToolCallRequest, ToolCallResult
 
         label = msg.metadata.get("subagent_label", sub_id)
         subs = self._subagent_state.setdefault(conversation_id, {})
@@ -526,6 +565,28 @@ class NekoChatChannel(BaseChannel):
             }
             state["segments"].append(payload)
             state["cur_round"] = {}
+            await self._broadcast(conversation_id, payload)
+            return
+
+        if delta.type == "tool_call_results" and isinstance(delta.content, list):
+            results_payload = [
+                {
+                    "tool_call_id": r.tool_call_id,
+                    "name": r.name,
+                    "content": r.content,
+                }
+                for r in delta.content if isinstance(r, ToolCallResult)
+            ]
+            if not results_payload:
+                return
+            payload = {
+                "type": "subagent_delta",
+                "subagent_id": sub_id,
+                "delta_type": "tool_call_results",
+                "results": results_payload,
+                "conversation_id": conversation_id,
+            }
+            state["segments"].append(payload)
             await self._broadcast(conversation_id, payload)
 
     @staticmethod

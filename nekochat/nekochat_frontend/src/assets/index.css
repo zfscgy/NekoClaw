@@ -403,6 +403,112 @@ html, body {
   color: #79c0ff;
 }
 .action-item.is-tool .tool-name { color: #d2a8ff; font-weight: 600; margin-right: 2px; }
+.action-item.is-tool .tool-call-clickable {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: 2px 4px;
+  margin: -2px -4px;
+  transition: background .12s;
+}
+.action-item.is-tool .tool-call-clickable:hover {
+  background: rgba(125, 180, 255, 0.14);
+}
+
+.tool-result-card {
+  max-width: 760px;
+  max-height: calc(100vh - 48px);
+}
+.tool-result-modal-body {
+  padding: 16px 20px;
+  gap: 14px;
+}
+.tool-result-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+.tool-result-section:last-child {
+  flex: 1;
+  min-height: 0;
+}
+.tool-result-section-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.tool-result-text {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--tool-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+.tool-arg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 40vh;
+  overflow-y: auto;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.tool-arg-item {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.tool-arg-key {
+  padding: 6px 10px;
+  background: rgba(210, 168, 255, 0.12);
+  color: #d2a8ff;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  word-break: break-word;
+}
+html.light .tool-arg-key {
+  background: rgba(111, 66, 193, 0.10);
+  color: #6f42c1;
+}
+.tool-arg-value {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--tool-bg);
+  color: #79c0ff;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 30vh;
+  overflow: auto;
+}
+html.light .tool-arg-value { color: #0969da; }
+.tool-arg-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  background: var(--tool-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.tool-result-section:last-child .tool-result-text {
+  flex: 1;
+  min-height: 0;
+}
 .action-item.is-progress {
   background: var(--progress-bg);
   color: var(--text-muted);

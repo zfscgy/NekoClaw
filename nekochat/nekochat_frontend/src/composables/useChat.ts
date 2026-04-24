@@ -23,6 +23,13 @@ export interface ChatMessage {
   conversation_id?: string
   _replay?: boolean
   time?: string
+  // Only meaningful for type === 'tool_call': the provider tool_call id,
+  // used to match against tool_call_results for click-to-reveal display.
+  toolCallId?: string
+  toolName?: string
+  toolResult?: string
+  // Raw arguments dict for tool_call, used to render the args panel.
+  toolArguments?: Record<string, unknown>
 }
 
 interface ToolCallSlot {
@@ -67,6 +74,12 @@ interface ToolCallPayload {
   partial: boolean
 }
 
+interface ToolCallResultPayload {
+  tool_call_id: string
+  name: string
+  content: string
+}
+
 // Discriminated union for incoming WebSocket messages.
 // Streaming deltas carry `_delta: true`; session-replay entries carry `_replay: true`.
 type WsMessage =
@@ -75,9 +88,10 @@ type WsMessage =
   | { type: 'thinking'; content?: string; conversation_id?: string; _delta?: boolean }
   | { type: 'content'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean; time?: string }
   | { type: 'think'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
-  | { type: 'tool_call'; role?: string; content?: string | ToolCallPayload; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean }
+  | { type: 'tool_call'; role?: string; content?: string | ToolCallPayload; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean; tool_call_id?: string; tool_name?: string }
+  | { type: 'tool_call_results'; results: ToolCallResultPayload[]; conversation_id?: string; _replay?: boolean }
   | { type: 'subagent_start'; subagent_id: string; label: string; conversation_id?: string; _replay?: boolean }
-  | { type: 'subagent_delta'; subagent_id: string; delta_type: 'thinking' | 'content' | 'tool_call'; content?: string | ToolCallPayload; conversation_id?: string }
+  | { type: 'subagent_delta'; subagent_id: string; delta_type: 'thinking' | 'content' | 'tool_call' | 'tool_call_results'; content?: string | ToolCallPayload; results?: ToolCallResultPayload[]; conversation_id?: string }
   | { type: 'subagent_end'; subagent_id: string; status: string; conversation_id?: string }
   | { type: 'subagent_ref'; session_id: string; label: string; status: string; task?: string; conversation_id?: string; _replay?: boolean }
 
@@ -114,9 +128,23 @@ function _formatToolCall(item: Pick<ToolCallSlot, 'name' | 'arguments'>): string
   return `${item.name || 'tool'}(${item.arguments || ''})`
 }
 
+function _extractArgsFromContent(content: string): Record<string, unknown> | undefined {
+  const open = content.indexOf('(')
+  if (open < 0) return undefined
+  const close = content.lastIndexOf(')')
+  if (close <= open) return undefined
+  const inner = content.slice(open + 1, close).trim()
+  if (!inner) return undefined
+  const parsed = _safeJsonParse(inner)
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+    return parsed as Record<string, unknown>
+  return undefined
+}
+
 function _toolCallPayloadToChatMessage(
   tc: string | ToolCallPayload | undefined,
   cid: string,
+  extras?: { tool_call_id?: string; tool_name?: string },
 ): ChatMessage | null {
   if (!tc) return null
 
@@ -128,7 +156,12 @@ function _toolCallPayloadToChatMessage(
       if (args && typeof args === 'object')
         return { type: 'content', role: 'assistant', content: args.content || '', media: Array.isArray(args.media) ? args.media : [], conversation_id: cid }
     }
-    return { type: 'tool_call', content: tc, conversation_id: cid }
+    const name = extras?.tool_name || tc.split('(', 1)[0]
+    return {
+      type: 'tool_call', content: tc, conversation_id: cid,
+      toolCallId: extras?.tool_call_id, toolName: name,
+      toolArguments: _extractArgsFromContent(tc),
+    }
   }
 
   // Structured ToolCallPayload from backend
@@ -138,7 +171,31 @@ function _toolCallPayloadToChatMessage(
       return { type: 'content', role: 'assistant', content: (args.content as string) || '', media: Array.isArray(args.media) ? args.media as string[] : [], conversation_id: cid }
   }
 
-  return { type: 'tool_call', content: _formatToolCall({ name: tc.name || '', arguments: _stringifyToolArguments(tc.arguments) }), conversation_id: cid }
+  const argsDict = (tc.arguments && typeof tc.arguments === 'object' && !Array.isArray(tc.arguments))
+    ? (tc.arguments as Record<string, unknown>)
+    : undefined
+  return {
+    type: 'tool_call',
+    content: _formatToolCall({ name: tc.name || '', arguments: _stringifyToolArguments(tc.arguments) }),
+    conversation_id: cid,
+    toolCallId: tc.id || extras?.tool_call_id,
+    toolName: tc.name || extras?.tool_name,
+    toolArguments: argsDict,
+  }
+}
+
+/** Extract a `subagent:<id>` session key from a spawn tool's result string. */
+function _extractSpawnSessionId(result: string): string | null {
+  if (!result) return null
+  const m = result.match(/session_id:\s*(subagent:[A-Za-z0-9_-]+)/i)
+  return m ? m[1] : null
+}
+
+/** Extract the subagent display label from a spawn tool's result string. */
+function _extractSpawnLabel(result: string): string | null {
+  if (!result) return null
+  const m = result.match(/Subagent\s+\[([^\]]+)\]/)
+  return m ? m[1] : null
 }
 
 function _tryConvertMessageToolCall(entry: ChatMessage, cid: string): ChatMessage | null {
@@ -279,14 +336,29 @@ export function useChat() {
     if (needNewSlot) {
       current = { name: '', arguments: '', arrIdx: arr.length, toolCallId: incomingId }
       _toolCallState.current = current
-      arr.push({ type: 'tool_call', content: _formatToolCall(current), conversation_id: cid })
+      arr.push({
+        type: 'tool_call',
+        content: _formatToolCall(current),
+        conversation_id: cid,
+        toolCallId: incomingId || undefined,
+        toolName: tc.name || undefined,
+      })
     }
 
     if (tc.name) current!.name = tc.name
     const hasArgs = tc.arguments && Object.keys(tc.arguments).length > 0
     if (hasArgs) current!.arguments = _stringifyToolArguments(tc.arguments)
     if (incomingId != null) current!.toolCallId = incomingId
-    arr[current!.arrIdx] = { ...arr[current!.arrIdx], content: _formatToolCall(current!) }
+    const argsDict = (tc.arguments && typeof tc.arguments === 'object' && !Array.isArray(tc.arguments))
+      ? (tc.arguments as Record<string, unknown>)
+      : arr[current!.arrIdx].toolArguments
+    arr[current!.arrIdx] = {
+      ...arr[current!.arrIdx],
+      content: _formatToolCall(current!),
+      toolCallId: current!.toolCallId || arr[current!.arrIdx].toolCallId,
+      toolName: current!.name || arr[current!.arrIdx].toolName,
+      toolArguments: argsDict,
+    }
 
     if (!tc.partial) {
       if (tc.name === 'send_message_with_attachments') {
@@ -302,6 +374,48 @@ export function useChat() {
         }
       }
       _toolCallState.current = null
+    }
+  }
+
+  /**
+   * Attach a tool-call result to its matching tool_call entry so the UI can
+   * reveal it on click. For spawn results, also create/update the subagent card.
+   */
+  function _applyToolCallResults(arr: ChatMessage[], cid: string, results: ToolCallResultPayload[]): void {
+    for (const r of results) {
+      if (r.tool_call_id) {
+        for (let i = arr.length - 1; i >= 0; i--) {
+          const entry = arr[i]
+          if (entry.type === 'tool_call' && entry.toolCallId === r.tool_call_id) {
+            arr[i] = { ...entry, toolResult: r.content, toolName: entry.toolName || r.name }
+            break
+          }
+        }
+      }
+
+      if (r.name === 'spawn') {
+        const sessionId = _extractSpawnSessionId(r.content)
+        if (sessionId) {
+          if (!subagents.value[cid]) subagents.value[cid] = []
+          const plainId = sessionId.replace(/^subagent:/, '')
+          const existing = subagents.value[cid].find(s =>
+            s.id === plainId || s.sessionId === sessionId
+          )
+          if (!existing) {
+            subagents.value[cid].push({
+              id: plainId,
+              label: _extractSpawnLabel(r.content) || plainId,
+              status: 'running',
+              items: [],
+              sessionId,
+            })
+            subagents.value = { ...subagents.value }
+          } else if (!existing.sessionId) {
+            existing.sessionId = sessionId
+            subagents.value = { ...subagents.value }
+          }
+        }
+      }
     }
   }
 
@@ -432,7 +546,10 @@ export function useChat() {
             break
           }
           const tc = msg.content
-          const chatMsg = _toolCallPayloadToChatMessage(tc, cid)
+          const chatMsg = _toolCallPayloadToChatMessage(tc, cid, {
+            tool_call_id: (msg as { tool_call_id?: string }).tool_call_id,
+            tool_name: (msg as { tool_name?: string }).tool_name,
+          })
           if (chatMsg) {
             if (chatMsg.type === 'content') {
               const fp = chatMsg.role + '\x00' + chatMsg.content
@@ -442,6 +559,12 @@ export function useChat() {
               arr.push(chatMsg)
             }
           }
+          break
+        }
+
+        case 'tool_call_results': {
+          const results = (msg as { results?: ToolCallResultPayload[] }).results || []
+          if (results.length) _applyToolCallResults(arr, cid, results)
           break
         }
 
@@ -504,17 +627,26 @@ export function useChat() {
           const existing = subagents.value[cid].find(s =>
             s.id === plainId || s.sessionId === refMsg.session_id
           )
+          const finalStatus = (refMsg.status as 'ok' | 'error') || 'ok'
           if (!existing) {
-            const sub: SubagentState = {
+            subagents.value[cid].push({
               id: plainId,
               label: refMsg.label || refMsg.session_id,
-              status: (refMsg.status as 'ok' | 'error') || 'ok',
+              status: finalStatus,
               items: [],
               sessionId: refMsg.session_id,
-            }
-            subagents.value[cid].push(sub)
+            })
             subagents.value = { ...subagents.value }
             _fetchSubagentHistory(refMsg.session_id, cid)
+          } else {
+            let changed = false
+            if (existing.status !== finalStatus) { existing.status = finalStatus; changed = true }
+            if (!existing.sessionId) { existing.sessionId = refMsg.session_id; changed = true }
+            if (refMsg.label && (!existing.label || existing.label === plainId)) {
+              existing.label = refMsg.label; changed = true
+            }
+            if (changed) subagents.value = { ...subagents.value }
+            if (!existing.items.length) _fetchSubagentHistory(refMsg.session_id, cid)
           }
           break
         }

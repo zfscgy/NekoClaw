@@ -75,7 +75,11 @@ class SubagentManager:
         bg_task.add_done_callback(_cleanup)
 
         logger.info("Spawned subagent [{}]: {}", task_id, display_label)
-        return f"Subagent [{display_label}] started (id: {task_id}). I'll notify you when it completes."
+        return (
+            f"Subagent [{display_label}] started "
+            f"(id: {task_id}, session_id: subagent:{task_id}). "
+            "I'll notify you when it completes."
+        )
 
     async def _run_subagent(
         self,
@@ -221,6 +225,13 @@ class SubagentManager:
                         ))
                     messages.append(StreamDelta(type="tool_call_results", content=tool_results))
                     session.messages.append(StreamDelta(type="tool_call_results", content=tool_results))
+
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=channel, chat_id=chat_id,
+                        type="delta",
+                        msg=StreamDelta(type="tool_call_results", content=tool_results),
+                        metadata=sub_meta,
+                    ))
 
                     self.sessions.save(session)
                     # Signal the frontend to commit this round

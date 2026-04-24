@@ -72,9 +72,20 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 脚本会：
 
-1. 自动找到同目录下的 `NekoClaw-*.zip`（可用 `-Archive <path>` 指定）
-2. 解压到 `-Destination`（默认为脚本所在目录），得到 `<Destination>\NekoClaw\`
-3. 调用 `NekoClaw\resources\packpy\win64\install.ps1`：用 `python-build-standalone` 创建 `main` / `dev` 两个虚拟环境，并从 `wheels/` 离线安装依赖
+1. **[1/3] 解压**：自动找到同目录下的 `NekoClaw-*.zip`（可用 `-Archive <path>` 指定），解压到 `-Destination`（默认为脚本所在目录），得到 `<Destination>\NekoClaw\`
+2. **[2/3] 安装 Python 环境**：调用 `NekoClaw\resources\packpy\win64\install.ps1`，用 `python-build-standalone` 创建 `main` / `dev` 两个虚拟环境，并从 `wheels/` 离线安装依赖
+3. **[3/3] 交互式配置**：用 `main` venv 的 Python 运行 `nekoclaw.config.loader.prompt_configs`，提示用户填写：
+   - OpenAI API Key (`openai_api_key`)
+   - OpenAI Base URL (`openai_base_url`)
+   - 默认模型 (`model`)
+   - 模板语言 (`locale`，取值 `en` / `cn`)
+
+   配置写入 `~/.nekoclaw/config.json` 与 `~/.nekoclaw/providers.json`；已有值会作为默认显示，直接回车即可保留。
+
+> 若只想重新配置，可在激活 `main` venv 后运行：
+> ```powershell
+> python -c "from nekoclaw.config.loader import prompt_configs; prompt_configs()"
+> ```
 
 #### 参数
 
@@ -83,7 +94,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | `-Archive <path>`      | 显式指定 zip 路径                                            |
 | `-Destination <path>`  | 解压目标目录（默认：脚本所在目录）                           |
 | `-Force`               | 若 `<Destination>\NekoClaw` 已存在则先删除再解压             |
-| `-SkipPythonInstall`   | 只解压，不安装 Python 环境                                   |
+| `-SkipPythonInstall`   | 只解压，不安装 Python 环境（也会自动跳过配置提示）           |
+| `-SkipConfigure`       | 安装 Python 环境但跳过最后一步的交互式配置                   |
 
 #### 激活运行环境
 

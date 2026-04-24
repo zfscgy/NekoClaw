@@ -3,6 +3,7 @@
 import asyncio
 import os
 import platform
+import time
 import uuid
 from pathlib import Path
 
@@ -41,6 +42,7 @@ class PersistentShell:
         self._stderr_task: asyncio.Task | None = None
         self._shell_kind = "powershell" if _IS_WINDOWS else "bash"
         self._startup_errors: list[str] = []
+        self._last_activity: float = 0.0
 
     async def start(self) -> None:
         """Start the underlying shell process if it isn't already running."""
@@ -80,6 +82,29 @@ class PersistentShell:
                 pass
             self._process = None
 
+    async def reset(self) -> str:
+        """Kill the current shell and start a fresh one with the same profile commands.
+
+        Returns a human-readable status string. Safe to call even if the shell
+        is not currently running.
+        """
+        async with self._lock:
+            await self._hard_reset()
+            self._startup_errors.clear()
+            try:
+                await self.start()
+            except Exception as e:
+                return f"Shell was terminated, but failed to restart: {e}"
+
+            notes = list(self._startup_errors)
+            self._startup_errors.clear()
+            if notes:
+                return (
+                    "Shell session restarted with a fresh profile.\n"
+                    "Startup notes:\n" + "\n".join(notes)
+                )
+            return "Shell session restarted with a fresh profile."
+
     async def execute(
         self,
         command: str,
@@ -87,7 +112,14 @@ class PersistentShell:
         working_dir: str | None = None,
         output_limit: int = 10_000,
     ) -> str:
-        """Run command with guard checks and formatted output."""
+        """Run command with guard checks and formatted output.
+
+        The special literal ``:reset`` terminates the underlying shell and
+        starts a fresh one, re-running all configured profile commands.
+        """
+        if isinstance(command, str) and command.strip() == ":reset":
+            return await self.reset()
+
         cwd_hint = working_dir or self._current_cwd
         guard_error = check(
             command,
@@ -124,7 +156,7 @@ class PersistentShell:
             result = result[:output_limit] + f"\n... (truncated, {len(result) - output_limit} more chars)"
         return result
 
-    async def run(self, command: str, timeout: float = 60.0) -> tuple[str, str, int | None]:
+    async def run(self, command: str, timeout: float = 30.0) -> tuple[str, str, int | None]:
         """Execute raw command in the persistent shell."""
         async with self._lock:
             if not self.is_alive:
@@ -139,7 +171,15 @@ class PersistentShell:
     def _shell_args(self) -> list[str]:
         if _IS_WINDOWS:
             self._shell_kind = "powershell"
-            return ["powershell", "-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass"]
+            return [
+                "powershell",
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "-",
+            ]
         self._shell_kind = "bash"
         return ["bash", "--norc", "--noprofile"]
 
@@ -202,36 +242,92 @@ class PersistentShell:
         self._stderr_buf.clear()
         sentinel = _new_sentinel()
         payload = self._build_payload(command, sentinel)
+        self._last_activity = time.monotonic()
         await self._write(payload)
 
         output_lines: list[str] = []
         returncode: int | None = None
-        try:
-            async with asyncio.timeout(timeout):
-                assert self._process is not None and self._process.stdout is not None
-                while True:
-                    raw = await self._process.stdout.readline()
-                    if not raw:
-                        break
-                    line = raw.decode("utf-8", errors="replace")
-                    if sentinel in line:
-                        parts = line.strip().split()
-                        if len(parts) >= 2:
-                            try:
-                                returncode = int(parts[-1])
-                            except ValueError:
-                                pass
-                        break
-                    output_lines.append(line)
-        except asyncio.TimeoutError:
-            return "", f"Error: Command timed out after {timeout} seconds", None
+        timed_out = False
+
+        assert self._process is not None and self._process.stdout is not None
+        stdout = self._process.stdout
+
+        while True:
+            remaining = timeout - (time.monotonic() - self._last_activity)
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                raw = await asyncio.wait_for(stdout.readline(), timeout=remaining)
+            except asyncio.TimeoutError:
+                # No stdout within the window; if stderr drainer bumped activity
+                # while we were waiting, give the command another grace period.
+                if time.monotonic() - self._last_activity < timeout:
+                    continue
+                timed_out = True
+                break
+
+            if not raw:
+                break
+
+            self._last_activity = time.monotonic()
+            line = raw.decode("utf-8", errors="replace")
+            if sentinel in line:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    try:
+                        returncode = int(parts[-1])
+                    except ValueError:
+                        pass
+                break
+            output_lines.append(line)
+
+        if timed_out:
+            partial_stdout = "".join(output_lines)
+            partial_stderr = "".join(self._stderr_buf)
+            await self._hard_reset()
+            message = (
+                f"Error: Command produced no output for {timeout} seconds. "
+                "It likely spawned an interactive process (e.g. python/ipython REPL) "
+                "that consumed stdin, or is hung. The shell session has been restarted; "
+                "non-persistent state such as variables and cwd were lost."
+            )
+            combined_stderr = (partial_stderr + "\n" if partial_stderr else "") + message
+            return partial_stdout, combined_stderr, None
 
         return "".join(output_lines), "".join(self._stderr_buf), returncode
+
+    async def _hard_reset(self) -> None:
+        """Forcefully terminate the shell so the next run() starts a fresh session."""
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._stderr_task = None
+
+        if self._process:
+            try:
+                if self._process.stdin:
+                    try:
+                        self._process.stdin.close()
+                    except Exception:
+                        pass
+                self._process.kill()
+                await asyncio.wait_for(self._process.wait(), timeout=5.0)
+            except Exception:
+                pass
+            self._process = None
+
+        self._stderr_buf.clear()
+        self._current_cwd = self._initial_cwd
 
     async def _drain_stderr(self) -> None:
         try:
             assert self._process is not None and self._process.stderr is not None
             async for raw in self._process.stderr:
+                self._last_activity = time.monotonic()
                 self._stderr_buf.append(raw.decode("utf-8", errors="replace"))
         except Exception:
             pass

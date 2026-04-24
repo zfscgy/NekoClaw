@@ -142,6 +142,78 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
+def prompt_configs(config_path: Path | None = None) -> Config:
+    """
+    Interactively prompt the user for the essential configuration keys and
+    persist the result to disk.
+
+    Keys collected:
+    - OpenAI API base URL (``providers.openai.api_base``)
+    - OpenAI API key     (``providers.openai.api_key``)
+    - Default model      (``agents.defaults.model``)
+    - Template locale    (``agents.defaults.template_locale`` — ``en`` or ``cn``)
+
+    Current values (if any) are shown as defaults; press Enter to keep them.
+
+    Args:
+        config_path: Optional path to the config file. Uses the default path
+            (or the path previously set via ``set_config_path``) if omitted.
+
+    Returns:
+        The updated, saved configuration.
+    """
+    from rich.console import Console
+    from rich.prompt import Prompt
+
+    console = Console()
+    path = config_path or get_config_path()
+
+    create_default_configs(path)
+    cfg = load_config(path)
+
+    console.print("[bold cyan]NekoClaw configuration[/bold cyan]")
+    console.print("[dim]Press Enter to keep the current value.[/dim]\n")
+
+    console.print("[bold]OpenAI provider[/bold]")
+    openai = cfg.providers.openai
+
+    current_key = openai.api_key
+    new_key = Prompt.ask(
+        "  openai_api_key",
+        default=current_key,
+        show_default=bool(current_key),
+    )
+    if new_key and new_key != current_key:
+        openai.api_key = new_key.strip()
+
+    new_base = Prompt.ask(
+        "  openai_base_url",
+        default=openai.api_base or "",
+        show_default=bool(openai.api_base),
+    ).strip()
+    openai.api_base = new_base or None
+
+    new_model = Prompt.ask(
+        "  model",
+        default=cfg.agents.defaults.model,
+    ).strip()
+    if new_model:
+        cfg.agents.defaults.model = new_model
+
+    console.print("\n[bold]Locale[/bold]")
+    new_locale = Prompt.ask(
+        "  locale",
+        choices=["en", "cn"],
+        default=cfg.agents.defaults.template_locale,
+    )
+    cfg.agents.defaults.template_locale = new_locale  # type: ignore[assignment]
+
+    save_config(cfg, path)
+    console.print(f"\n[green]✓[/green] Saved configuration to [cyan]{path}[/cyan]")
+
+    return cfg
+
+
 def _migrate_config(data: dict) -> dict:
     """Migrate old config formats to current."""
     # Move tools.exec.restrictToWorkspace → tools.restrictToWorkspace

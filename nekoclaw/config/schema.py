@@ -125,7 +125,7 @@ class WebToolsConfig(Base):
 class ExecToolConfig(Base):
     """Shell exec tool configuration."""
 
-    timeout: int = 60
+    timeout: int = 30
     path_append: str = ""
     profile_files: list[str] = Field(
         default_factory=lambda: [".profile", (Path.home() / ".nekoclaw" / ".profile").as_posix()]

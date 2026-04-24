@@ -226,6 +226,12 @@ class AgentLoop:
                     ))
                 messages.append(StreamDelta(type="tool_call_results", content=tool_results))
 
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=channel, chat_id=chat_id,
+                    type="delta",
+                    msg=StreamDelta(type="tool_call_results", content=tool_results),
+                ))
+
                 self._save_session(session)
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=channel, chat_id=chat_id,

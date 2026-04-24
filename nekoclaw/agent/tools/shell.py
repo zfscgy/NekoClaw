@@ -27,7 +27,16 @@ class ExecTool(Tool):
         return (
             "Execute a shell command inside a persistent session and return its output. "
             "State such as the current directory, activated Python environments, and exported "
-            "variables persists between calls. Use with caution."
+            "variables persists between calls. The `timeout` is an idle timeout: as long as "
+            "the command keeps writing to stdout or stderr it will keep running, and it only "
+            "fires when the process has been silent for that many seconds. "
+            "Do NOT launch interactive programs that take over stdin (e.g. bare `python`, "
+            "`ipython`, `vim`, `ssh` without a command); they will hang until the idle "
+            "timeout and then the shell will be auto-restarted. Use non-interactive forms "
+            "such as `python -c '...'` or `python script.py` instead. "
+            "Special command `:reset` kills the current shell and starts a new one with "
+            "the same profile commands re-run; use it after an accidental hang or to clear "
+            "a polluted environment."
         )
 
     @property
@@ -37,13 +46,18 @@ class ExecTool(Tool):
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute",
+                    "description": (
+                        "The shell command to execute. "
+                        "Pass the literal string `:reset` to restart the underlying shell "
+                        "session (re-runs profile commands, clears cwd/env state)."
+                    ),
                 },
                 "working_dir": {
                     "type": "string",
                     "description": (
                         "Optional directory to cd into before running the command. "
-                        "The shell's cwd will remain there for subsequent calls."
+                        "The shell's cwd will remain there for subsequent calls. "
+                        "Ignored when `command` is `:reset`."
                     ),
                 },
             },

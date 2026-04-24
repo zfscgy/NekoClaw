@@ -55,7 +55,7 @@
           rows="1"
           :disabled="disabled"
           @keydown.enter.exact.prevent="send"
-          @keydown.enter.shift.exact="model += '\n'"
+          @paste="onPaste"
           @input="autoResize"
         />
         <button
@@ -72,7 +72,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, nextTick } from 'vue'
 
 interface PendingFile {
   id: number
@@ -179,6 +179,33 @@ function autoResize(e: Event): void {
   const el = e.target as HTMLTextAreaElement
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 200) + 'px'
+}
+
+function onPaste(e: ClipboardEvent): void {
+  // Force plain-text paste so newlines in clipboard text/plain are preserved
+  // (the browser may otherwise prefer text/html and collapse line breaks).
+  const cd = e.clipboardData
+  if (!cd) return
+  const text = cd.getData('text/plain')
+  if (text == null) return
+  e.preventDefault()
+
+  const el = e.target as HTMLTextAreaElement
+  const start = el.selectionStart ?? model.value.length
+  const end = el.selectionEnd ?? model.value.length
+  const before = model.value.slice(0, start)
+  const after = model.value.slice(end)
+  const normalized = text.replace(/\r\n?/g, '\n')
+  model.value = before + normalized + after
+
+  const caret = start + normalized.length
+  nextTick(() => {
+    if (inputRef.value) {
+      inputRef.value.setSelectionRange(caret, caret)
+      inputRef.value.style.height = 'auto'
+      inputRef.value.style.height = Math.min(inputRef.value.scrollHeight, 200) + 'px'
+    }
+  })
 }
 
 function resetHeight(): void {

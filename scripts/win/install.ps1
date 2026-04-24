@@ -22,6 +22,10 @@
 .PARAMETER SkipPythonInstall
     Extract only; do not run `resources/packpy/win64/install.ps1`.
 
+.PARAMETER SkipConfigure
+    Do not prompt the user for NekoClaw configuration (OpenAI key, base URL,
+    model, locale) after the Python environment is ready.
+
 .EXAMPLE
     # Drop install.ps1 next to NekoClaw-0.1.4.post4-win64.zip and run:
     powershell -ExecutionPolicy Bypass -File .\install.ps1
@@ -31,7 +35,8 @@ param(
     [string]$Archive,
     [string]$Destination,
     [switch]$Force,
-    [switch]$SkipPythonInstall
+    [switch]$SkipPythonInstall,
+    [switch]$SkipConfigure
 )
 
 $ErrorActionPreference = 'Stop'
@@ -87,7 +92,7 @@ if (Test-Path $InstallRoot) {
 # -----------------------------------------------------------------------------
 # 1) Extract the archive
 # -----------------------------------------------------------------------------
-Write-Host "[1/2] Extracting archive ..." -ForegroundColor Cyan
+Write-Host "[1/3] Extracting archive ..." -ForegroundColor Cyan
 $tarExe = Get-Command tar.exe -ErrorAction SilentlyContinue
 if ($tarExe) {
     # tar handles large zips much faster than Expand-Archive.
@@ -113,7 +118,8 @@ Write-Host "Extracted to: $InstallRoot" -ForegroundColor Green
 # 2) Run the offline Python environment installer
 # -----------------------------------------------------------------------------
 if ($SkipPythonInstall) {
-    Write-Host "[2/2] Skipping Python env install (-SkipPythonInstall)." -ForegroundColor Yellow
+    Write-Host "[2/3] Skipping Python env install (-SkipPythonInstall)." -ForegroundColor Yellow
+    Write-Host "[3/3] Skipping config prompt (Python env not installed)." -ForegroundColor Yellow
     Write-Host "Install complete." -ForegroundColor Green
     return
 }
@@ -123,14 +129,41 @@ if (-not (Test-Path $PackPyInstaller)) {
     throw "packpy installer not found at $PackPyInstaller"
 }
 
-Write-Host "[2/2] Installing Python environment ..." -ForegroundColor Cyan
+Write-Host "[2/3] Installing Python environment ..." -ForegroundColor Cyan
 # Invoke in a fresh scope so its Activate.ps1 side effects don't leak here.
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $PackPyInstaller
 if ($LASTEXITCODE -ne 0) {
     throw "packpy install.ps1 failed with exit code $LASTEXITCODE"
 }
 
+# -----------------------------------------------------------------------------
+# 3) Prompt the user for essential NekoClaw configuration.
+#
+#    Writes OpenAI base URL / API key / default model / template locale to
+#    `~/.nekoclaw/config.json` (and the `providers.json` sidecar). Existing
+#    values appear as defaults so pressing Enter keeps them. Runs with the
+#    `main` venv's Python because that's where nekoclaw + rich + pydantic
+#    are installed.
+# -----------------------------------------------------------------------------
+$MainPython = Join-Path $InstallRoot 'resources\packpy\win64\.venvs\main\Scripts\python.exe'
+
+if ($SkipConfigure) {
+    Write-Host "[3/3] Skipping config prompt (-SkipConfigure)." -ForegroundColor Yellow
+} elseif (-not (Test-Path $MainPython)) {
+    Write-Warning "[3/3] Main venv python not found at $MainPython; skipping config prompt."
+} else {
+    Write-Host "[3/3] Configuring NekoClaw (writes to ~/.nekoclaw/config.json) ..." -ForegroundColor Cyan
+    & $MainPython -c "from nekoclaw.config.loader import prompt_configs; prompt_configs()"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Config prompt exited with code $LASTEXITCODE. You can re-run it later with:"
+        Write-Warning "  `"$MainPython`" -c `"from nekoclaw.config.loader import prompt_configs; prompt_configs()`""
+    }
+}
+
 Write-Host ""
 Write-Host "Install complete." -ForegroundColor Green
 Write-Host ("  Location    : {0}" -f $InstallRoot) -ForegroundColor Green
 Write-Host ("  Activate env: {0}" -f (Join-Path $InstallRoot 'resources\packpy\win64\.venvs\main\Scripts\Activate.ps1')) -ForegroundColor Green
+Write-Host ("  Config file : {0}" -f (Join-Path $HOME '.nekoclaw\config.json')) -ForegroundColor Green
+Write-Host "  Re-run config prompt later (inside activated main env):" -ForegroundColor DarkGray
+Write-Host "    python -c `"from nekoclaw.config.loader import prompt_configs; prompt_configs()`"" -ForegroundColor DarkGray
