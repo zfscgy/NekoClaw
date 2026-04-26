@@ -311,6 +311,7 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
                 "subagent_status": status,
                 "subagent_task": task,
             },
+            type="subagent",
         )
 
         await self.bus.publish_inbound(msg)

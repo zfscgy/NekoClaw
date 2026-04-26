@@ -12,16 +12,26 @@ if TYPE_CHECKING:
 
 @dataclass
 class InboundMessage:
-    """Message received from a chat channel."""
+    """Message received from a chat channel.
 
-    channel: str  # telegram, discord, slack, whatsapp
-    sender_id: str  # User identifier
+    ``type`` distinguishes the message's origin/intent:
+      - ``"user"``       – normal request from a human user (default)
+      - ``"subagent"``   – announcement produced by a spawned subagent
+      - ``"user_pause"`` – pause signal from the user; causes the currently
+                           running agent loop for the target session to stop
+                           at the next iteration boundary. Not dispatched as
+                           a regular message.
+    """
+
+    channel: str  # nekochat/telegram
+    sender_id: str  # Sender identifier (e.g. platform user id, "user", "subagent")
     chat_id: str  # Chat/channel identifier
     content: str  # Message text
     timestamp: datetime = field(default_factory=datetime.now)
     media: list[str] = field(default_factory=list)  # Media URLs
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data
     session_key_override: str | None = None  # Optional override for thread-scoped sessions
+    type: Literal["user", "subagent", "user_pause"] = "user"
 
     @property
     def session_key(self) -> str:

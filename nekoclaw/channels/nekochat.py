@@ -249,20 +249,28 @@ class NekoChatChannel(BaseChannel):
                 tc = raw if isinstance(raw, dict) else {}
                 name = tc.get("name", "tool")
                 args = tc.get("arguments", {})
-                args_str = json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
+                tc_content: dict[str, Any] = {
+                    "index": tc.get("index", 0),
+                    "id": tc.get("id", ""),
+                    "name": name,
+                    "arguments": args,
+                    "partial": bool(tc.get("partial", False)),
+                }
                 if name == "send_message_with_attachments":
                     try:
                         if isinstance(args, dict) and isinstance(args.get("media"), list):
-                            args = dict(args)
-                            args["media"] = NekoChatChannel._media_to_urls(args["media"])
-                            args_str = json.dumps(args, ensure_ascii=False)
+                            tc_content["arguments"] = {
+                                **args,
+                                "media": NekoChatChannel._media_to_urls(args["media"]),
+                            }
                     except Exception:
                         pass
+                # Match live streaming deltas: content is ToolCallRequest-shaped JSON, not "name({...})" text.
                 ui.append({
-                    "type": "tool_call", "role": "assistant",
-                    "content": f"{name}({args_str})", "media": [],
-                    "tool_call_id": tc.get("id", ""),
-                    "tool_name": name,
+                    "type": "tool_call",
+                    "role": "assistant",
+                    "content": tc_content,
+                    "media": [],
                     "conversation_id": cid,
                 })
 
@@ -904,8 +912,14 @@ class NekoChatChannel(BaseChannel):
                 tc = raw if isinstance(raw, dict) else {}
                 name = tc.get("name", "tool")
                 args = tc.get("arguments", {})
-                args_str = json.dumps(args, ensure_ascii=False) if isinstance(args, dict) else str(args)
-                ui.append({"type": "tool_call", "content": f"{name}({args_str})"})
+                tc_content: dict[str, Any] = {
+                    "index": tc.get("index", 0),
+                    "id": tc.get("id", ""),
+                    "name": name,
+                    "arguments": args,
+                    "partial": bool(tc.get("partial", False)),
+                }
+                ui.append({"type": "tool_call", "content": tc_content})
         return ui
 
     async def _handle_delete_conversation(self, request: Any) -> Any:

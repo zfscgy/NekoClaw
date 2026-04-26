@@ -93,6 +93,14 @@ class AgentLoop:
         self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
         self._active_tasks: dict[str, list[asyncio.Task]] = {}
         self._processing_lock = asyncio.Lock()
+        # session_keys whose currently-running agent loop should stop at the
+        # next iteration boundary. Populated by ``user_pause`` inbound messages.
+        self._pause_requests: set[str] = set()
+        # Per-session in-flight inboxes. While an agent loop is running for a
+        # session, additional ``type="user"`` inbound messages are routed here
+        # and injected at the next iteration boundary instead of queuing
+        # behind ``_processing_lock``.
+        self._session_inboxes: dict[str, asyncio.Queue[InboundMessage]] = {}
         self._register_default_tools()
 
     def _register_default_tools(self) -> None:
@@ -107,6 +115,77 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+    def _drain_inbox_into_messages(
+        self,
+        inbox: asyncio.Queue[InboundMessage],
+        session: Session,
+        messages: list[StreamDelta],
+    ) -> bool:
+        """Drain any queued in-flight messages for this session and append them
+        as ``user`` turns to *messages*. Returns ``True`` if any were injected.
+        """
+        injected = False
+        while not inbox.empty():
+            try:
+                pending = inbox.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            media_paths = self._save_inbound_media(session.key, pending.media)
+            preview = pending.content[:80] + "..." if len(pending.content) > 80 else pending.content
+            logger.info(
+                "Injecting in-flight message into session {}: {}",
+                session.key, preview,
+            )
+            delta = StreamDelta(
+                type="user",
+                content=pending.content,
+                media=media_paths or [],
+            )
+            messages.append(delta)
+            injected = True
+        return injected
+
+    def _release_session_inbox(self, session_key: str) -> None:
+        """Deregister the in-flight inbox for *session_key* and re-publish any
+        messages that arrived but were never consumed, so they go through the
+        normal dispatch path.
+        """
+        inbox = self._session_inboxes.pop(session_key, None)
+        if inbox is None:
+            return
+        while not inbox.empty():
+            try:
+                pending = inbox.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            logger.info(
+                "Re-publishing unconsumed in-flight message for session {}",
+                session_key,
+            )
+            # Best effort: schedule re-publish without awaiting to avoid
+            # blocking callers inside a ``finally`` block.
+            asyncio.create_task(self.bus.publish_inbound(pending))
+
+    def _save_inbound_media(self, session_key: str, media: list[str] | None) -> list[str] | None:
+        """Persist *media* paths into the session's media directory. Returns
+        the list of saved paths (or original paths as a fallback) or ``None``.
+        """
+        if not media:
+            return None
+        saved: list[str] = []
+        for p in media:
+            src = Path(p)
+            if not src.is_file():
+                logger.warning("Media file not found, skipping: {}", p)
+                continue
+            try:
+                dest = self.sessions.save_media(session_key, src)
+                saved.append(str(dest))
+            except Exception:
+                logger.warning("Failed to save media file {}, using original path", p)
+                saved.append(str(src))
+        return saved or None
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
@@ -131,7 +210,21 @@ class AgentLoop:
         final_content = None
         tools_used: list[str] = []
 
+        # In-flight inbox is registered by ``_process_message`` (our caller)
+        # so cleanup happens even if this loop raises.
+        inbox = self._session_inboxes.get(session.key)
+
         while iteration < self.max_iterations:
+            if session.key in self._pause_requests:
+                self._pause_requests.discard(session.key)
+                logger.info("Agent loop paused by user for session {}", session.key)
+                if final_content is None:
+                    final_content = "Paused by user."
+                break
+
+            if inbox is not None and self._drain_inbox_into_messages(inbox, session, messages):
+                self._save_session(session)
+
             iteration += 1
 
             openai_messages = delta_to_openai(messages)
@@ -283,6 +376,26 @@ class AgentLoop:
             except asyncio.TimeoutError:
                 continue
 
+            if msg.type == "user_pause":
+                # Don't dispatch as a regular message: just flag the session so
+                # the currently-running ``_run_agent_loop`` exits at its next
+                # iteration boundary.
+                self._pause_requests.add(msg.session_key)
+                logger.info("Pause requested for session {}", msg.session_key)
+                continue
+
+            # If an agent loop is already running for this session, route
+            # regular user messages to its in-flight inbox so they can be
+            # picked up at the next iteration boundary instead of queuing
+            # behind ``_processing_lock``.
+            if msg.type == "user" and (inbox := self._session_inboxes.get(msg.session_key)):
+                await inbox.put(msg)
+                logger.info(
+                    "Routed in-flight message to running loop for session {}",
+                    msg.session_key,
+                )
+                continue
+
             task = asyncio.create_task(self._dispatch(msg))
             self._active_tasks.setdefault(msg.session_key, []).append(task)
             task.add_done_callback(lambda t, k=msg.session_key: self._active_tasks.get(k, []) and self._active_tasks[k].remove(t) if t in self._active_tasks.get(k, []) else None)
@@ -364,21 +477,7 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
-        media_paths: list[str] | None = None
-        if msg.media:
-            saved = []
-            for p in msg.media:
-                src = Path(p)
-                if not src.is_file():
-                    logger.warning("Media file not found, skipping: {}", p)
-                    continue
-                try:
-                    dest = self.sessions.save_media(key, src)
-                    saved.append(str(dest))
-                except Exception:
-                    logger.warning("Failed to save media file {}, using original path", p)
-                    saved.append(str(src))
-            media_paths = saved or None
+        media_paths = self._save_inbound_media(key, msg.media)
 
         history = session.get_history(max_messages=self.memory_window)
         session.initial_messages = self.context.build_messages(
@@ -395,11 +494,18 @@ class AgentLoop:
         if media_paths:
             session.initial_messages[session._save_offset].media = media_paths
 
-        final_content, _ = await self._run_agent_loop(
-            channel=channel,
-            chat_id=chat_id,
-            session=session,
-        )
+        # Register an in-flight inbox so follow-up user messages arriving
+        # while the agent loop is running can be injected at the next
+        # iteration boundary instead of queuing behind ``_processing_lock``.
+        self._session_inboxes[session.key] = asyncio.Queue()
+        try:
+            final_content, _ = await self._run_agent_loop(
+                channel=channel,
+                chat_id=chat_id,
+                session=session,
+            )
+        finally:
+            self._release_session_inbox(session.key)
 
         if final_content is None:
             final_content = ("Background task completed." if msg.channel == "system"

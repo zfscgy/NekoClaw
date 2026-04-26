@@ -15,7 +15,7 @@
       >
         <div v-if="item.type === 'think'" class="subagent-think">{{ item.content }}</div>
         <div v-else-if="item.type === 'tool_call'" class="subagent-tool">
-          <span class="tool-name">{{ toolName(item.content) }}</span>{{ toolRest(item.content) }}
+          <span class="tool-name">{{ toolDisplay(item.content).name }}</span>{{ toolDisplay(item.content).rest }}
         </div>
         <div v-else class="subagent-content" v-html="renderMarkdown(item.content || '')"></div>
       </div>
@@ -68,15 +68,24 @@ function itemClass(item: ChatMessage): string {
   return 'is-content'
 }
 
-function toolName(content?: string): string {
-  if (!content) return 'tool'
-  const idx = content.indexOf('(')
-  return idx > 0 ? content.slice(0, idx) : content
-}
-
-function toolRest(content?: string): string {
-  if (!content) return ''
-  const idx = content.indexOf('(')
-  return idx > 0 ? content.slice(idx) : ''
+/** Persisted subagent history uses JSON tool payloads; live items use formatted strings. */
+function toolDisplay(content: unknown): { name: string; rest: string } {
+  if (content != null && typeof content === 'object' && !Array.isArray(content)) {
+    const o = content as { name?: string; arguments?: unknown }
+    const n = (o.name && String(o.name)) || 'tool'
+    let argsStr = ''
+    try {
+      if (typeof o.arguments === 'string') argsStr = o.arguments
+      else argsStr = JSON.stringify(o.arguments ?? {})
+    } catch {
+      argsStr = String(o.arguments ?? '')
+    }
+    return { name: n, rest: `(${argsStr})` }
+  }
+  const c = typeof content === 'string' ? content : ''
+  if (!c) return { name: 'tool', rest: '' }
+  const idx = c.indexOf('(')
+  if (idx > 0) return { name: c.slice(0, idx), rest: c.slice(idx) }
+  return { name: c, rest: '' }
 }
 </script>

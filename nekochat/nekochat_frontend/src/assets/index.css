@@ -426,11 +426,6 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-height: 0;
-}
-.tool-result-section:last-child {
-  flex: 1;
-  min-height: 0;
 }
 .tool-result-section-label {
   font-size: 11px;
@@ -451,14 +446,11 @@ html, body {
   border-radius: var(--radius-sm);
   white-space: pre-wrap;
   word-break: break-word;
-  overflow: auto;
 }
 .tool-arg-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 40vh;
-  overflow-y: auto;
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 12px;
   line-height: 1.5;
@@ -492,8 +484,6 @@ html.light .tool-arg-key {
   line-height: inherit;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 30vh;
-  overflow: auto;
 }
 html.light .tool-arg-value { color: #0969da; }
 .tool-arg-empty {
@@ -504,10 +494,6 @@ html.light .tool-arg-value { color: #0969da; }
   background: var(--tool-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-}
-.tool-result-section:last-child .tool-result-text {
-  flex: 1;
-  min-height: 0;
 }
 .action-item.is-progress {
   background: var(--progress-bg);
@@ -964,6 +950,7 @@ html.light .tool-arg-value { color: #0969da; }
 
 .modal-body {
   flex: 1;
+  min-height: 0; /* allow flex child to shrink so overflow-y scrolls inside max-height modal */
   overflow-y: auto;
   padding: 20px;
   display: flex;
