@@ -249,6 +249,18 @@ export function useChat() {
   let _toolCallState: ToolCallState = { current: null }
   let _roundStart = 0
 
+  // ── Scroll state ──────────────────────────────────────────────────
+  // Tolerance (px) for "near bottom" detection. Anything within this
+  // distance of the bottom is considered pinned, so streaming reflows
+  // (late image loads, code highlighting, etc.) can keep us at the
+  // bottom without yanking the user back if they've intentionally
+  // scrolled up to read earlier content.
+  const SCROLL_BOTTOM_TOLERANCE = 80
+  let _userScrolledUp = false
+  let _resizeObserver: ResizeObserver | null = null
+  let _observedInner: HTMLElement | null = null
+  let _scrollHandler: ((e: Event) => void) | null = null
+
   function setGroupOpen(key: string, val: boolean): void {
     _openCache[key] = val
     groupOpenState.value = { ...groupOpenState.value, [key]: val }
@@ -703,8 +715,12 @@ export function useChat() {
     groupOpenState.value = {}
     messagesByConv.value[id] = []
     subagents.value[id] = []
+    _userScrolledUp = false
     connectWs(id)
-    nextTick(scrollToBottom)
+    nextTick(() => {
+      _observeMessagesInner()
+      scrollToBottom(true)
+    })
   }
 
   async function deleteConversation(id: string): Promise<void> {
@@ -738,7 +754,7 @@ export function useChat() {
     messagesByConv.value[cid].push({
       type: 'content', role: 'user', content: text, media, conversation_id: cid,
     })
-    scrollToBottom()
+    scrollToBottom(true)
 
     const c = conversations.value.find(c => c.id === cid)
     if (c) c.preview = text.slice(0, 80)
@@ -779,10 +795,62 @@ export function useChat() {
     }
   }
 
-  function scrollToBottom(): void {
+  function _isAtBottom(el: HTMLElement): boolean {
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_BOTTOM_TOLERANCE
+  }
+
+  function _pinToBottom(el: HTMLElement): void {
+    // Override the container's CSS `scroll-behavior: smooth` with an
+    // explicit instant scroll. Smooth scrolling can't keep up with the
+    // moving target during rapid streaming deltas, leaving the viewport
+    // visibly trailing behind the actual bottom.
+    el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
+  }
+
+  function scrollToBottom(force = false): void {
+    if (force) _userScrolledUp = false
     nextTick(() => {
-      if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight
+      const el = messagesEl.value
+      if (!el) return
+      if (!force && _userScrolledUp) return
+      _pinToBottom(el)
+      // A second pass on the next animation frame catches layout shifts
+      // that finalize after Vue's flush — e.g. markdown-rendered code
+      // blocks, late font metrics, or images that just decoded.
+      requestAnimationFrame(() => {
+        const cur = messagesEl.value
+        if (!cur) return
+        if (!force && _userScrolledUp) return
+        _pinToBottom(cur)
+      })
     })
+  }
+
+  function _onMessagesScroll(): void {
+    const el = messagesEl.value
+    if (!el) return
+    _userScrolledUp = !_isAtBottom(el)
+  }
+
+  function _ensureResizeObserver(): void {
+    if (_resizeObserver || typeof ResizeObserver === 'undefined') return
+    _resizeObserver = new ResizeObserver(() => {
+      const cur = messagesEl.value
+      if (!cur) return
+      if (_userScrolledUp) return
+      _pinToBottom(cur)
+    })
+  }
+
+  function _observeMessagesInner(): void {
+    _ensureResizeObserver()
+    const el = messagesEl.value
+    if (!el || !_resizeObserver) return
+    const inner = el.querySelector('.messages-inner') as HTMLElement | null
+    if (inner === _observedInner) return
+    if (_observedInner) _resizeObserver.unobserve(_observedInner)
+    _observedInner = inner
+    if (inner) _resizeObserver.observe(inner)
   }
 
   function autoResize(e: Event): void {
@@ -801,6 +869,14 @@ export function useChat() {
 
   onMounted(async () => {
     window.addEventListener('keydown', onKeydown)
+    nextTick(() => {
+      const el = messagesEl.value
+      if (el) {
+        _scrollHandler = _onMessagesScroll
+        el.addEventListener('scroll', _scrollHandler, { passive: true })
+      }
+      _observeMessagesInner()
+    })
     try {
       const res = await fetch('/api/conversations')
       const data = await res.json() as { conversations?: Array<{ id: string; last_message?: string }> }
@@ -813,6 +889,15 @@ export function useChat() {
 
   onUnmounted(() => {
     window.removeEventListener('keydown', onKeydown)
+    if (messagesEl.value && _scrollHandler) {
+      messagesEl.value.removeEventListener('scroll', _scrollHandler)
+    }
+    _scrollHandler = null
+    if (_resizeObserver) {
+      _resizeObserver.disconnect()
+      _resizeObserver = null
+    }
+    _observedInner = null
     _closeWs()
   })
 

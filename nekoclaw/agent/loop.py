@@ -499,7 +499,7 @@ class AgentLoop:
         # iteration boundary instead of queuing behind ``_processing_lock``.
         self._session_inboxes[session.key] = asyncio.Queue()
         try:
-            final_content, _ = await self._run_agent_loop(
+            final_content, tools_used = await self._run_agent_loop(
                 channel=channel,
                 chat_id=chat_id,
                 session=session,
@@ -508,14 +508,19 @@ class AgentLoop:
             self._release_session_inbox(session.key)
 
         if final_content is None:
-            final_content = ("Background task completed." if msg.channel == "system"
-                             else "I've completed processing but have no response to give.")
-            session.initial_messages.append(StreamDelta(
-                type="content",
-                content=final_content,
-                time=datetime.now(timezone.utc).isoformat(),
-            ))
-            self._save_session(session)
+            # If the agent already replied via the message tool, the response
+            # was delivered out-of-band and no fallback content is needed.
+            if "send_message_with_attachments" in tools_used:
+                final_content = ""
+            else:
+                final_content = ("Background task completed." if msg.channel == "system"
+                                 else "I've completed processing but have no response to give.")
+                session.initial_messages.append(StreamDelta(
+                    type="content",
+                    content=final_content,
+                    time=datetime.now(timezone.utc).isoformat(),
+                ))
+                self._save_session(session)
 
         await self.bus.publish_outbound(OutboundMessage(
             channel=channel, chat_id=chat_id, type="stream_end",

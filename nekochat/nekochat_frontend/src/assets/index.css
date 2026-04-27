@@ -519,6 +519,25 @@ html.light .tool-arg-value { color: #0969da; }
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 11px;
 }
+.action-item .reasoning-response pre {
+  background: #111;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  overflow-x: auto;
+  font-size: 11px;
+  margin: 6px 0;
+}
+.action-item .reasoning-response pre code,
+html.light .action-item .reasoning-response pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  display: block;
+}
+html.light .action-item .reasoning-response pre { background: #f0f0f0; }
+html.light .action-item .reasoning-response code { background: rgba(0,0,0,0.06); }
 
 .progress-card {
   background: var(--progress-bg);
@@ -563,7 +582,14 @@ html.light .tool-arg-value { color: #0969da; }
   font-size: 12px;
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
-.msg-bubble pre code { background: none; padding: 0; }
+.msg-bubble pre code,
+html.light .msg-bubble pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  display: block;
+}
 .msg-bubble ul, .msg-bubble ol { padding-left: 20px; margin: 6px 0; }
 .msg-bubble li { margin-bottom: 3px; }
 .msg-bubble blockquote {
