@@ -1,6 +1,8 @@
 """Persistent terminal session and command execution."""
 
 import asyncio
+import base64
+import locale
 import os
 import platform
 import time
@@ -16,6 +18,31 @@ _SENTINEL_PREFIX = "__SHELL_DONE_"
 
 def _new_sentinel() -> str:
     return f"{_SENTINEL_PREFIX}{uuid.uuid4().hex}"
+
+
+def _detect_shell_encoding() -> str:
+    """Pick the encoding that matches what the underlying shell will actually write.
+
+    On Windows, when PowerShell's stdout is a pipe (no console attached), the
+    host initialises its output ``TextWriter`` from ``Console.OutputEncoding``,
+    which falls back to the process ANSI code page (``GetACP``) - typically
+    CP936/GBK on Chinese Windows, CP1252 on English Windows, etc. Trying to
+    flip that to UTF-8 from inside Windows PowerShell 5.1 after launch is
+    unreliable: the host caches the writer at startup, so subsequent
+    ``[Console]::OutputEncoding = ...`` assignments never reach the bytes
+    going through our pipe. We therefore decode using the actual on-the-wire
+    encoding, which is exactly what ``cmd.exe`` / PowerShell themselves do
+    when rendering Chinese filenames in a normal interactive console.
+
+    On POSIX the user's locale (or our LANG/LC_ALL fallback) is already UTF-8
+    in essentially every modern distribution, so UTF-8 is the right default.
+    """
+    if _IS_WINDOWS:
+        try:
+            return locale.getpreferredencoding(False) or "mbcs"
+        except Exception:
+            return "mbcs"
+    return "utf-8"
 
 
 class PersistentShell:
@@ -35,7 +62,16 @@ class PersistentShell:
         env = os.environ.copy()
         if exec_cfg.path_append:
             env["PATH"] = env.get("PATH", "") + os.pathsep + exec_cfg.path_append
+        # On POSIX, make sure locale-aware tools (ls, grep, python) don't fall
+        # back to the C/POSIX locale and mangle UTF-8 paths. We deliberately do
+        # NOT force UTF-8 on Windows: the shell itself emits ANSI-codepage
+        # bytes, and forcing child Python processes to UTF-8 here would just
+        # mix two encodings on the same pipe.
+        if not _IS_WINDOWS:
+            env.setdefault("LANG", "en_US.UTF-8")
+            env.setdefault("LC_ALL", "en_US.UTF-8")
         self._env = env
+        self._encoding = _detect_shell_encoding()
         self._process: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
         self._stderr_buf: list[str] = []
@@ -225,8 +261,11 @@ class PersistentShell:
 
     def _build_payload(self, command: str, sentinel: str) -> str:
         if self._shell_kind == "powershell":
+            encoded_command = base64.b64encode(command.encode("utf-8")).decode("ascii")
             return (
-                f"{command}\n"
+                '$__nb_cmd = [System.Text.Encoding]::UTF8.GetString('
+                f'[System.Convert]::FromBase64String("{encoded_command}"))\n'
+                "Invoke-Expression $__nb_cmd\n"
                 "$__nb_rc = if ($?) { if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 } } "
                 "else { if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 1 } }\n"
                 f'Write-Output "{sentinel} $__nb_rc"\n'
@@ -235,7 +274,11 @@ class PersistentShell:
 
     async def _write(self, text: str) -> None:
         if self._process and self._process.stdin:
-            self._process.stdin.write(text.encode())
+            # PowerShell payloads are ASCII-only wrappers around Base64-encoded
+            # UTF-8 commands, so non-ASCII command text never depends on the
+            # redirected stdin code page. POSIX shells receive the command text
+            # directly, using the UTF-8 locale configured at process startup.
+            self._process.stdin.write(text.encode(self._encoding, errors="replace"))
             await self._process.stdin.drain()
 
     async def _run_no_lock(self, command: str, timeout: float) -> tuple[str, str, int | None]:
@@ -271,7 +314,7 @@ class PersistentShell:
                 break
 
             self._last_activity = time.monotonic()
-            line = raw.decode("utf-8", errors="replace")
+            line = raw.decode(self._encoding, errors="replace")
             if sentinel in line:
                 parts = line.strip().split()
                 if len(parts) >= 2:
@@ -328,6 +371,6 @@ class PersistentShell:
             assert self._process is not None and self._process.stderr is not None
             async for raw in self._process.stderr:
                 self._last_activity = time.monotonic()
-                self._stderr_buf.append(raw.decode("utf-8", errors="replace"))
+                self._stderr_buf.append(raw.decode(self._encoding, errors="replace"))
         except Exception:
             pass
