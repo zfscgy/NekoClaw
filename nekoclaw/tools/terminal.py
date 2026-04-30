@@ -2,7 +2,6 @@
 
 import asyncio
 import base64
-import locale
 import os
 import platform
 import time
@@ -23,25 +22,16 @@ def _new_sentinel() -> str:
 def _detect_shell_encoding() -> str:
     """Pick the encoding that matches what the underlying shell will actually write.
 
-    On Windows, when PowerShell's stdout is a pipe (no console attached), the
-    host initialises its output ``TextWriter`` from ``Console.OutputEncoding``,
-    which falls back to the process ANSI code page (``GetACP``) - typically
-    CP936/GBK on Chinese Windows, CP1252 on English Windows, etc. Trying to
-    flip that to UTF-8 from inside Windows PowerShell 5.1 after launch is
-    unreliable: the host caches the writer at startup, so subsequent
-    ``[Console]::OutputEncoding = ...`` assignments never reach the bytes
-    going through our pipe. We therefore decode using the actual on-the-wire
-    encoding, which is exactly what ``cmd.exe`` / PowerShell themselves do
-    when rendering Chinese filenames in a normal interactive console.
+    On Windows we inject ``[Console]::OutputEncoding = [System.Text.Encoding]::UTF8``
+    as the very first command the shell runs (see ``_run_profile_startup``).
+    Contrary to older documentation, this assignment *does* update the
+    ``TextWriter`` used for the pipe, so all subsequent bytes – both from
+    PowerShell's own commands and from child-process output – are UTF-8.
+    We therefore use UTF-8 throughout and avoid any CP936/CP1252 mismatch.
 
     On POSIX the user's locale (or our LANG/LC_ALL fallback) is already UTF-8
     in essentially every modern distribution, so UTF-8 is the right default.
     """
-    if _IS_WINDOWS:
-        try:
-            return locale.getpreferredencoding(False) or "mbcs"
-        except Exception:
-            return "mbcs"
     return "utf-8"
 
 
@@ -63,13 +53,18 @@ class PersistentShell:
         if exec_cfg.path_append:
             env["PATH"] = env.get("PATH", "") + os.pathsep + exec_cfg.path_append
         # On POSIX, make sure locale-aware tools (ls, grep, python) don't fall
-        # back to the C/POSIX locale and mangle UTF-8 paths. We deliberately do
-        # NOT force UTF-8 on Windows: the shell itself emits ANSI-codepage
-        # bytes, and forcing child Python processes to UTF-8 here would just
-        # mix two encodings on the same pipe.
+        # back to the C/POSIX locale and mangle UTF-8 paths.
         if not _IS_WINDOWS:
             env.setdefault("LANG", "en_US.UTF-8")
             env.setdefault("LC_ALL", "en_US.UTF-8")
+        else:
+            # On Windows, Python subprocesses pick their own stdout encoding
+            # independently of the shell's code page, which can cause garbled
+            # output for non-ASCII text (e.g. `python -c "print('你好')"`).
+            # We force Python to output UTF-8, consistent with the UTF-8
+            # pipeline established by the `[Console]::OutputEncoding = UTF8`
+            # startup command (see _run_profile_startup).
+            env.setdefault("PYTHONIOENCODING", "utf-8")
         self._env = env
         self._encoding = _detect_shell_encoding()
         self._process: asyncio.subprocess.Process | None = None
@@ -220,6 +215,17 @@ class PersistentShell:
         return ["bash", "--norc", "--noprofile"]
 
     async def _run_profile_startup(self) -> None:
+        # On Windows, switch PowerShell's decoding of external-process stdout to
+        # UTF-8.  PowerShell's own TextWriter (used for Write-Output, sentinels,
+        # etc.) is cached at process startup and keeps the original ANSI code
+        # page, so self._encoding remains valid for all bytes we read from the
+        # pipe.  Only the *input* side – reading bytes from child processes like
+        # python.exe – is affected by this assignment.
+        if _IS_WINDOWS:
+            await self._run_no_lock(
+                "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
+                timeout=5.0,
+            )
         commands = self._collect_profile_commands()
         for cmd in commands:
             stdout, stderr, returncode = await self._run_no_lock(cmd, timeout=30.0)

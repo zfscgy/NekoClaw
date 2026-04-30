@@ -248,6 +248,9 @@ export function useChat() {
 
   let _toolCallState: ToolCallState = { current: null }
   let _roundStart = 0
+  // Keys that the user explicitly opened via the toggle UI (not auto-opened).
+  // Auto-close logic skips these so user-opened panels stay open.
+  const _userOpenedKeys = new Set<string>()
 
   // ── Scroll state ──────────────────────────────────────────────────
   // Tolerance (px) for "near bottom" detection. Anything within this
@@ -263,6 +266,11 @@ export function useChat() {
 
   function setGroupOpen(key: string, val: boolean): void {
     _openCache[key] = val
+    if (val) {
+      _userOpenedKeys.add(key)
+    } else {
+      _userOpenedKeys.delete(key)
+    }
     groupOpenState.value = { ...groupOpenState.value, [key]: val }
   }
 
@@ -291,7 +299,7 @@ export function useChat() {
       } else {
         if (groups.length) {
           const prev = groups[groups.length - 1]
-          if (prev.type === 'actions' && _openCache[prev.key] !== false) pendingOpen[prev.key] = false
+          if (prev.type === 'actions' && _openCache[prev.key] !== false && !_userOpenedKeys.has(prev.key)) pendingOpen[prev.key] = false
         }
         groups.push({ type: 'content', role: m.role, content: m.content, media: m.media || [], time: m.time })
         i++
@@ -677,6 +685,7 @@ export function useChat() {
         if (wsGeneration === myGen && activeId.value === convId) {
           messagesByConv.value[convId] = []
           for (const k of Object.keys(_openCache)) delete _openCache[k]
+          _userOpenedKeys.clear()
           groupOpenState.value = {}
           connectWs(convId)
         }
@@ -712,6 +721,7 @@ export function useChat() {
     isStreaming.value = false
     streamActive.value = false
     for (const k of Object.keys(_openCache)) delete _openCache[k]
+    _userOpenedKeys.clear()
     groupOpenState.value = {}
     messagesByConv.value[id] = []
     subagents.value[id] = []

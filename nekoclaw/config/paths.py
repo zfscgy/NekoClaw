@@ -47,8 +47,3 @@ def get_backup_dir() -> Path:
 def get_bridge_install_dir() -> Path:
     """Return the shared WhatsApp bridge installation directory."""
     return Path.home() / ".nekoclaw" / "bridge"
-
-
-def get_sessions_dir() -> Path:
-    """Return the global sessions directory under ~/.nekoclaw."""
-    return ensure_dir(Path.home() / ".nekoclaw" / "sessions")

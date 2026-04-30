@@ -9,7 +9,6 @@ from typing import Any
 
 from loguru import logger
 
-from nekoclaw.config.paths import get_sessions_dir
 from nekoclaw.utils.helpers import safe_filename
 from nekoclaw.providers.base import StreamDelta
 
@@ -59,12 +58,13 @@ class SessionManager:
     """
     Manages conversation sessions.
 
-    Sessions are stored as JSONL files in the sessions directory.
+    Sessions are stored as JSONL files under the active workspace.
     """
 
     def __init__(self, workspace: Path):
         self.workspace = workspace
-        self.sessions_dir = get_sessions_dir()
+        self.sessions_dir = workspace / "sessions"
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, Session] = {}
 
     def _get_session_path(self, key: str) -> Path:

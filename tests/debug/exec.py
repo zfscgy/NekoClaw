@@ -17,6 +17,15 @@
     :info          打印当前 ExecTool 的 schema / 状态
     :help / ?      显示帮助
     :quit / :exit  退出
+
+
+测试关键点：
+- 能否正常执行命令
+- 执行ls，查看中文目录名
+- 执行cd 中文目录名
+- Python返回/STDERR是否有乱码  
+    - python -c "print('你好')"   
+    - python -c "你好"
 """
 
 from __future__ import annotations

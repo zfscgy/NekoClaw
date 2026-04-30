@@ -5,7 +5,6 @@ from nekoclaw.config.paths import (
     get_bridge_install_dir,
     get_cron_dir,
     get_data_dir,
-    get_sessions_dir,
     get_logs_dir,
     get_media_dir,
     get_runtime_subdir,
@@ -24,5 +23,4 @@ __all__ = [
     "get_logs_dir",
     "get_workspace_path",
     "get_bridge_install_dir",
-    "get_sessions_dir",
 ]

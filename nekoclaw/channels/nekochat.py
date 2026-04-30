@@ -91,7 +91,7 @@ class NekoChatChannel(BaseChannel):
     """Chat web UI channel serving Vue.js frontend + REST + WebSocket API.
 
     Conversation history is stored in the standard agent session JSONL files
-    (``~/.nekoclaw/sessions/nekochat_<cid>.jsonl``), which are the single source
+    (``<workspace>/sessions/nekochat_<cid>.jsonl``), which are the single source
     of truth for both the LLM context and the UI display.  Each entry is a
     serialized ``StreamDelta`` dict (type + content).  Thinking deltas are
     naturally excluded from LLM context by ``delta_to_openai``.
@@ -99,9 +99,12 @@ class NekoChatChannel(BaseChannel):
 
     name = "nekochat"
 
-    def __init__(self, config: NekoChatConfig, bus: MessageBus):
+    def __init__(self, config: NekoChatConfig, bus: MessageBus, workspace: Path):
         super().__init__(config, bus)
         self.config: NekoChatConfig = config
+        self.workspace = workspace
+        self.sessions_dir = workspace / "sessions"
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
         # conversation_id -> set of active WebSocket connections
         self._ws_connections: dict[str, set] = {}
         # conversation_ids with an LLM turn currently in-flight
@@ -169,17 +172,14 @@ class NekoChatChannel(BaseChannel):
     # Session helpers — read & translate session JSONL to UI format
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _session_path(cid: str) -> Path:
-        from nekoclaw.config.paths import get_sessions_dir
+    def _session_path(self, cid: str) -> Path:
         from nekoclaw.utils.helpers import safe_filename
         safe_key = safe_filename(f"nekochat_{cid}")
-        return get_sessions_dir() / f"{safe_key}.jsonl"
+        return self.sessions_dir / f"{safe_key}.jsonl"
 
-    @staticmethod
-    def _read_session_messages(cid: str) -> list[dict[str, Any]]:
+    def _read_session_messages(self, cid: str) -> list[dict[str, Any]]:
         """Read raw messages from the session JSONL for this conversation."""
-        path = NekoChatChannel._session_path(cid)
+        path = self._session_path(cid)
         if not path.exists():
             return []
         messages: list[dict[str, Any]] = []
@@ -817,11 +817,9 @@ class NekoChatChannel(BaseChannel):
 
     async def _handle_list_conversations(self, request: Any) -> Any:
         """List all nekochat conversations by scanning session JSONL files."""
-        from nekoclaw.config.paths import get_sessions_dir
-        sessions_dir = get_sessions_dir()
         conversations = []
         try:
-            for path in sessions_dir.glob("nekochat_*.jsonl"):
+            for path in self.sessions_dir.glob("nekochat_*.jsonl"):
                 try:
                     meta: dict[str, Any] = {}
                     last_message = ""
@@ -870,13 +868,11 @@ class NekoChatChannel(BaseChannel):
         ui = self._subagent_session_to_ui(messages)
         return aiohttp_web.json_response({"history": ui})
 
-    @staticmethod
-    def _read_subagent_session_messages(session_id: str) -> list[dict[str, Any]]:
+    def _read_subagent_session_messages(self, session_id: str) -> list[dict[str, Any]]:
         """Read raw messages from a subagent session JSONL."""
-        from nekoclaw.config.paths import get_sessions_dir
         from nekoclaw.utils.helpers import safe_filename
         safe_key = safe_filename(session_id.replace(":", "_"))
-        path = get_sessions_dir() / f"{safe_key}.jsonl"
+        path = self.sessions_dir / f"{safe_key}.jsonl"
         if not path.exists():
             return []
         messages: list[dict[str, Any]] = []

@@ -65,6 +65,7 @@ class ChannelManager:
                 self.channels["nekochat"] = NekoChatChannel(
                     self.config.channels.nekochat,
                     self.bus,
+                    self.config.workspace_path,
                 )
                 logger.info(
                     "NekoChat web UI channel enabled at http://{}:{}",

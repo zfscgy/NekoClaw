@@ -97,9 +97,9 @@ class AgentLoop:
         # next iteration boundary. Populated by ``user_pause`` inbound messages.
         self._pause_requests: set[str] = set()
         # Per-session in-flight inboxes. While an agent loop is running for a
-        # session, additional ``type="user"`` inbound messages are routed here
-        # and injected at the next iteration boundary instead of queuing
-        # behind ``_processing_lock``.
+        # session, additional ``type="user"`` and ``type="subagent"`` inbound
+        # messages are routed here and injected at the next iteration boundary
+        # instead of queuing behind ``_processing_lock``.
         self._session_inboxes: dict[str, asyncio.Queue[InboundMessage]] = {}
         self._register_default_tools()
 
@@ -115,6 +115,33 @@ class AgentLoop:
         self.tools.register(SpawnTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+    @staticmethod
+    def _routing_session_key(msg: InboundMessage) -> str:
+        """Return the parent conversation key used for dispatch/in-flight routing."""
+        if msg.channel == "system":
+            channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id
+                                else ("cli", msg.chat_id))
+            return f"{channel}:{chat_id}"
+        return msg.session_key
+
+    @staticmethod
+    def _subagent_ref_delta(msg: InboundMessage) -> StreamDelta | None:
+        """Convert a subagent completion announcement into a persisted delta."""
+        meta = msg.metadata
+        session_id = meta.get("subagent_session_id")
+        if not session_id:
+            return None
+        return StreamDelta(
+            type="subagent_ref",
+            content={
+                "session_id": session_id,
+                "label": meta.get("subagent_label", ""),
+                "status": meta.get("subagent_status", "ok"),
+                "task": meta.get("subagent_task", ""),
+                "announce": msg.content,
+            },
+        )
 
     def _drain_inbox_into_messages(
         self,
@@ -137,11 +164,13 @@ class AgentLoop:
                 "Injecting in-flight message into session {}: {}",
                 session.key, preview,
             )
-            delta = StreamDelta(
-                type="user",
-                content=pending.content,
-                media=media_paths or [],
-            )
+            delta = self._subagent_ref_delta(pending) if pending.type == "subagent" else None
+            if delta is None:
+                delta = StreamDelta(
+                    type="user",
+                    content=pending.content,
+                    media=media_paths or [],
+                )
             messages.append(delta)
             injected = True
         return injected
@@ -380,25 +409,28 @@ class AgentLoop:
                 # Don't dispatch as a regular message: just flag the session so
                 # the currently-running ``_run_agent_loop`` exits at its next
                 # iteration boundary.
-                self._pause_requests.add(msg.session_key)
-                logger.info("Pause requested for session {}", msg.session_key)
+                routing_key = self._routing_session_key(msg)
+                self._pause_requests.add(routing_key)
+                logger.info("Pause requested for session {}", routing_key)
                 continue
 
             # If an agent loop is already running for this session, route
-            # regular user messages to its in-flight inbox so they can be
-            # picked up at the next iteration boundary instead of queuing
-            # behind ``_processing_lock``.
-            if msg.type == "user" and (inbox := self._session_inboxes.get(msg.session_key)):
+            # regular user messages and subagent announcements to its
+            # in-flight inbox so they can be picked up at the next iteration
+            # boundary instead of queuing behind ``_processing_lock``.
+            routing_key = self._routing_session_key(msg)
+            if msg.type in {"user", "subagent"} and (inbox := self._session_inboxes.get(routing_key)):
                 await inbox.put(msg)
                 logger.info(
-                    "Routed in-flight message to running loop for session {}",
-                    msg.session_key,
+                    "Routed in-flight {} message to running loop for session {}",
+                    msg.type, routing_key,
                 )
                 continue
-
+            
+            # In this case, the message is not "injected" to a running loop
             task = asyncio.create_task(self._dispatch(msg))
-            self._active_tasks.setdefault(msg.session_key, []).append(task)
-            task.add_done_callback(lambda t, k=msg.session_key: self._active_tasks.get(k, []) and self._active_tasks[k].remove(t) if t in self._active_tasks.get(k, []) else None)
+            self._active_tasks.setdefault(routing_key, []).append(task)
+            task.add_done_callback(lambda t, k=routing_key: self._active_tasks.get(k, []) and self._active_tasks[k].remove(t) if t in self._active_tasks.get(k, []) else None)
         await self.bus.publish_outbound(OutboundMessage(
             channel=msg.channel, chat_id=msg.chat_id, type="stream_end",
         ))
@@ -532,6 +564,11 @@ class AgentLoop:
         # Check for pending subagent reference (set by _process_message for subagent announcements)
         sub_ref: dict | None = getattr(session, "_pending_subagent_ref", None)
         sub_ref_emitted = False
+        existing_subagent_refs = {
+            m.content.get("session_id")
+            for m in session.messages
+            if m.type == "subagent_ref" and isinstance(m.content, dict)
+        }
 
         messages = session.initial_messages
         for delta in messages[session._save_offset:]:
@@ -545,16 +582,19 @@ class AgentLoop:
                     raw = delta.content
                     if isinstance(raw, str) and raw.startswith(ContextBuilder._RUNTIME_CONTEXT_TAG):
                         raw = raw.split("\n\n", 1)[-1]
-                    session.messages.append(StreamDelta(
-                        type="subagent_ref",
-                        content={
-                            "session_id": sub_ref["subagent_session_id"],
-                            "label": sub_ref.get("subagent_label", ""),
-                            "status": sub_ref.get("subagent_status", "ok"),
-                            "task": sub_ref.get("subagent_task", ""),
-                            "announce": raw,
-                        },
-                    ))
+                    session_id = sub_ref["subagent_session_id"]
+                    if session_id not in existing_subagent_refs:
+                        session.messages.append(StreamDelta(
+                            type="subagent_ref",
+                            content={
+                                "session_id": session_id,
+                                "label": sub_ref.get("subagent_label", ""),
+                                "status": sub_ref.get("subagent_status", "ok"),
+                                "task": sub_ref.get("subagent_task", ""),
+                                "announce": raw,
+                            },
+                        ))
+                        existing_subagent_refs.add(session_id)
                     sub_ref_emitted = True
                     continue
 
@@ -583,10 +623,17 @@ class AgentLoop:
                 session.messages.append(StreamDelta(type="user", content=content, media=delta.media))
                 continue
 
+            if delta.type == "subagent_ref" and isinstance(delta.content, dict):
+                session_id = delta.content.get("session_id")
+                if session_id in existing_subagent_refs:
+                    continue
+                existing_subagent_refs.add(session_id)
+
             session.messages.append(delta)
 
         session._save_offset = len(messages)
         session.updated_at = datetime.now()
+        session._pending_subagent_ref = None  # type: ignore[attr-defined]
         self.sessions.save(session)
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
