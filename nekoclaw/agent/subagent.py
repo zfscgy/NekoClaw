@@ -4,11 +4,13 @@ import asyncio
 import json
 import uuid
 from pathlib import Path
+from textwrap import dedent
 from typing import Any
 
 from loguru import logger
 
 from nekoclaw.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from nekoclaw.agent.tools.report import ReportTaskTool
 from nekoclaw.agent.tools.registry import ToolRegistry
 from nekoclaw.agent.tools.shell import ExecTool
 from nekoclaw.agent.tools.web import WebFetchTool, WebSearchTool
@@ -119,6 +121,8 @@ class SubagentManager:
             tools.register(ExecTool(working_dir=str(self.workspace)))
             tools.register(WebSearchTool())
             tools.register(WebFetchTool())
+            report_tool = ReportTaskTool()
+            tools.register(report_tool)
 
             system_prompt = self._build_subagent_prompt()
             messages: list[StreamDelta] = [
@@ -133,6 +137,8 @@ class SubagentManager:
             max_iterations = 15
             iteration = 0
             final_result: str | None = None
+            final_status = "error"
+            reminder = "Continue the task and remember to call ReportTask when task is finished"
 
             while iteration < max_iterations:
                 iteration += 1
@@ -240,28 +246,43 @@ class SubagentManager:
                         type="clear_unsent_buffer",
                         metadata=sub_meta,
                     ))
+                    if report_tool.report is not None:
+                        report = report_tool.report
+                        final_status = "ok" if report["success"] else "error"
+                        final_result = self._format_task_report(report)
+                        break
                     continue
                 else:
                     if response_content:
                         messages.append(StreamDelta(type="content", content=response_content))
                         session.messages.append(StreamDelta(type="content", content=response_content))
-                    final_result = response_content
-                    break
+                    messages.append(StreamDelta(type="user", content=reminder))
+                    session.messages.append(StreamDelta(type="user", content=reminder))
+                    self.sessions.save(session)
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=channel, chat_id=chat_id,
+                        type="clear_unsent_buffer",
+                        metadata=sub_meta,
+                    ))
+                    continue
 
             if final_result is None:
-                final_result = "Task completed but no final response was generated."
+                final_result = (
+                    "Subagent stopped without calling ReportTask. "
+                    "No final task report was sent by the subagent."
+                )
 
             self.sessions.save(session)
-            logger.info("Subagent [{}] completed successfully", task_id)
+            logger.info("Subagent [{}] completed with status {}", task_id, final_status)
 
             # Notify frontend that subagent finished
             await self.bus.publish_outbound(OutboundMessage(
                 channel=channel, chat_id=chat_id,
                 type="stream_end",
-                metadata={**sub_meta, "subagent_status": "ok"},
+                metadata={**sub_meta, "subagent_status": final_status},
             ))
 
-            await self._announce_result(task_id, label, task, final_result, origin, "ok")
+            await self._announce_result(task_id, label, task, final_result, origin, final_status)
 
         except Exception as e:
             error_msg = f"Error: {str(e)}"
@@ -291,14 +312,17 @@ class SubagentManager:
         status_text = "completed successfully" if status == "ok" else "failed"
         session_key = f"subagent:{task_id}"
 
-        announce_content = f"""[Subagent '{label}' {status_text}]
+        announce_content = dedent(f"""
+            [Subagent '{label}' {status_text}]
 
-Task: {task}
+            Task: {task}
 
-Result:
-{result}
+            Result:
+            {result}
 
-Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not mention technical details like "subagent" or task IDs."""
+            Summarize this naturally for the user. Keep it brief (1-2 sentences).
+            Do not mention technical details like "subagent" or task IDs.
+            """).strip()
 
         msg = InboundMessage(
             channel="system",
@@ -317,25 +341,51 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
         await self.bus.publish_inbound(msg)
         logger.debug("Subagent [{}] announced result to {}:{}", task_id, origin['channel'], origin['chat_id'])
 
+    @staticmethod
+    def _format_task_report(report: dict[str, Any]) -> str:
+        """Format a ReportTask payload for the main agent."""
+        return dedent(f"""
+            Success: {report["success"]}
+
+            Output:
+            {report["output"]}
+
+            Actions:
+            {report["actions"]}
+
+            Products:
+            {report["products"]}
+            """).strip()
+
     def _build_subagent_prompt(self) -> str:
         """Build a focused system prompt for the subagent."""
         from nekoclaw.agent.context import ContextBuilder
         from nekoclaw.agent.skills import SkillsLoader
 
         time_ctx = ContextBuilder._build_runtime_context(None, None)
-        parts = [f"""# Subagent
+        parts = [dedent(f"""
+            # Subagent
 
-{time_ctx}
+            {time_ctx}
 
-You are a subagent spawned by the main agent to complete a specific task.
-Stay focused on the assigned task. Your final response will be reported back to the main agent.
+            You are a subagent spawned by the main agent to complete a specific task.
+            Stay focused on the assigned task. You must call the ReportTask tool when
+            the task is finished or cannot be completed. Do not finish with a plain
+            text final response.
 
-## Workspace
-{self.workspace}"""]
+            ## Workspace
+            {self.workspace}
+            """).strip()]
 
         skills_summary = SkillsLoader(self.workspace).build_skills_summary()
         if skills_summary:
-            parts.append(f"## Skills\n\nRead SKILL.md with read_file to use a skill.\n\n{skills_summary}")
+            parts.append(dedent(f"""
+                ## Skills
+
+                Read SKILL.md with read_file to use a skill.
+
+                {skills_summary}
+                """).strip())
 
         return "\n\n".join(parts)
 

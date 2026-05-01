@@ -20,7 +20,7 @@ from nekoclaw.agent.tools.filesystem import EditFileTool, ListDirTool, ReadFileT
 from nekoclaw.agent.tools.message import MessageTool
 from nekoclaw.agent.tools.registry import ToolRegistry
 from nekoclaw.agent.tools.shell import ExecTool
-from nekoclaw.agent.tools.spawn import SpawnTool
+from nekoclaw.agent.tools.spawn import CallSubagentTool
 from nekoclaw.agent.tools.web import WebFetchTool, WebSearchTool
 from nekoclaw.bus.events import InboundMessage, OutboundMessage
 from nekoclaw.bus.queue import MessageBus
@@ -112,7 +112,7 @@ class AgentLoop:
         self.tools.register(WebSearchTool(max_results=10))
         self.tools.register(WebFetchTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
-        self.tools.register(SpawnTool(manager=self.subagents))
+        self.tools.register(CallSubagentTool(manager=self.subagents))
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
 
@@ -218,7 +218,7 @@ class AgentLoop:
 
     def _set_tool_context(self, channel: str, chat_id: str, message_id: str | None = None) -> None:
         """Update context for all tools that need routing info."""
-        for name in ("send_message_with_attachments", "spawn", "cron"):
+        for name in ("send_message_with_attachments", "call_subagent", "cron"):
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "send_message_with_attachments" else []))

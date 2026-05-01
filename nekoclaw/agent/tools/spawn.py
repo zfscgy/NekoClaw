@@ -1,4 +1,4 @@
-"""Spawn tool for creating background subagents."""
+"""Tool for calling background subagents."""
 
 from typing import TYPE_CHECKING, Any
 
@@ -8,8 +8,8 @@ if TYPE_CHECKING:
     from nekoclaw.agent.subagent import SubagentManager
 
 
-class SpawnTool(Tool):
-    """Tool to spawn a subagent for background task execution."""
+class CallSubagentTool(Tool):
+    """Tool to delegate work to a background subagent."""
 
     def __init__(self, manager: "SubagentManager"):
         self._manager = manager
@@ -25,14 +25,16 @@ class SpawnTool(Tool):
 
     @property
     def name(self) -> str:
-        return "spawn"
+        return "call_subagent"
 
     @property
     def description(self) -> str:
         return (
-            "Spawn a subagent to handle a task in the background. "
-            "Use this for complex or time-consuming tasks that can run independently. "
-            "The subagent will complete the task and report back when done."
+            "Call a background subagent to complete a focused task independently. "
+            "Use this for complex, research-heavy, or time-consuming work that can run "
+            "without blocking the main conversation. The subagent is required to finish "
+            "by calling ReportTask with success status, output, actions taken, and "
+            "products produced; that report will be returned to the main agent."
         )
 
     @property
@@ -53,7 +55,7 @@ class SpawnTool(Tool):
         }
 
     async def execute(self, task: str, label: str | None = None, **kwargs: Any) -> str:
-        """Spawn a subagent to execute the given task."""
+        """Call a subagent to execute the given task."""
         return await self._manager.spawn(
             task=task,
             label=label,
