@@ -14,6 +14,7 @@ from nekoclaw.providers.delta_buffer import DeltaBuffer
 
 _ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name"})
 _ALNUM = string.ascii_letters + string.digits
+_UNSET = object()
 
 
 def _short_tool_id() -> str:
@@ -47,21 +48,24 @@ class OpenAIProvider(LLMProvider):
 
     def reconfigure(
         self,
-        api_key: str | None = None,
-        api_base: str | None = None,
-        extra_headers: dict[str, str] | None = None,
+        api_key: str | None | object = _UNSET,
+        api_base: str | None | object = _UNSET,
+        extra_headers: dict[str, str] | None | object = _UNSET,
+        default_model: str | object = _UNSET,
     ) -> None:
         """Rebuild the underlying OpenAI client with new credentials.
 
-        Any argument left as ``None`` retains the current value, except that
-        ``extra_headers`` may be passed as an empty dict to clear it.
+        Omitted arguments retain the current value. Passing ``None`` for
+        ``api_base`` clears the custom base URL.
         """
-        if api_key is not None:
+        if api_key is not _UNSET:
             self.api_key = api_key
-        if api_base is not None:
+        if api_base is not _UNSET:
             self.api_base = api_base or None
-        if extra_headers is not None:
+        if extra_headers is not _UNSET:
             self.extra_headers = extra_headers or {}
+        if default_model is not _UNSET:
+            self.default_model = default_model
         self._client = AsyncOpenAI(
             api_key=self.api_key or "no-key",
             base_url=self.api_base or None,
@@ -245,7 +249,7 @@ class OpenAIProvider(LLMProvider):
 
         except Exception as e:
             logger.warning("Streaming failed, no tokens yielded: {}", e)
-            return
+            yield StreamDelta(type="content", content=f"Error: {e}")
 
     async def chat_stream(
         self,

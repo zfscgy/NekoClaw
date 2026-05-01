@@ -40,7 +40,7 @@ class QQConfig(Base):
 class NekoChatConfig(Base):
     """NekoChat web UI channel configuration."""
 
-    enabled: bool = False
+    enabled: bool = True  # It is the default enabled channel
     host: str = "127.0.0.1"
     port: int = 8899
     allow_from: list[str] = Field(default_factory=lambda: ["*"])  # "*" = allow all
@@ -61,12 +61,12 @@ class AgentDefaults(Base):
         default="en",
         description="Locale for bundled workspace templates synced on startup (en or cn).",
     )
-    model: str = "gpt-4o"
+    model: str = "gpt-5.4"
     max_tokens: int = 8192
     temperature: float = 0.1
     max_tool_iterations: int = 40
     memory_window: int = 100
-    reasoning_effort: str | None = None  # low / medium / high — enables LLM thinking mode
+    reasoning_effort: str | None = "medium"  # low / medium / high — enables LLM thinking mode
 
 
 class AgentsConfig(Base):

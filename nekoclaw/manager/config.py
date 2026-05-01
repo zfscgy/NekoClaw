@@ -3,8 +3,7 @@
 Exposes generic :func:`get` / :func:`set` helpers that read and mutate the
 active :class:`~nekoclaw.config.schema.Config` via dot-path keys
 (e.g. ``providers.openai.api_key``), persist changes to disk *and* apply them
-to the live :class:`~nekoclaw.providers.base.LLMProvider` so no restart is
-required.
+to the live runtime where possible so no restart is required.
 
 The frontend config panel is driven entirely by the Pydantic schema: calling
 :func:`get` returns the full config dict plus the resolved JSON schema, so
@@ -19,6 +18,7 @@ from loguru import logger
 
 from nekoclaw.config.loader import load_config, save_config
 from nekoclaw.config.schema import Config
+from nekoclaw.manager.runtime import get_agent, get_heartbeat
 from nekoclaw.manager.runtime import get_config as _get_runtime_config
 from nekoclaw.manager.runtime import get_provider, set_runtime
 
@@ -28,7 +28,7 @@ from nekoclaw.manager.runtime import get_provider, set_runtime
 # ---------------------------------------------------------------------------
 
 
-def _resolve_config() -> Config:
+def get_global_config() -> Config:
     """Return the live runtime config, falling back to disk."""
     return _get_runtime_config() or load_config()
 
@@ -96,13 +96,13 @@ def _resolve_schema() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def get(key: str | None = None) -> Any:
+def to_dict(key: str | None = None) -> Any:
     """Return the config as a dict, or the value at ``key`` (dot-path).
 
     Path segments accept both ``snake_case`` and ``camelCase``.  Pass ``None``
     (or an empty string) to retrieve the full configuration.
     """
-    cfg = _resolve_config()
+    cfg = get_global_config()
     data: Any = cfg.model_dump(by_alias=False)
     if not key:
         return data
@@ -114,18 +114,17 @@ def get(key: str | None = None) -> Any:
     return data
 
 
-def set(key: str, value: Any) -> Any:  # noqa: A001 - module-level API name
+def set_key(key: str, value: Any) -> Any:  # noqa: A001 - module-level API name
     """Set the config value at ``key`` (dot-path) and apply it live.
 
     The mutation is validated against :class:`Config`, persisted to disk via
-    :func:`save_config`, registered as the new runtime config, and — for
-    ``providers.*`` keys — pushed to the live LLM provider through its
-    ``reconfigure()`` hook.
+    :func:`save_config`, registered as the new runtime config, and pushed to
+    live runtime components where supported.
 
     Returns the value that was written.
     """
     parts = _normalize_parts(key)
-    cfg = _resolve_config()
+    cfg = get_global_config()
     data = cfg.model_dump(by_alias=False)
 
     node = data
@@ -149,8 +148,7 @@ def set(key: str, value: Any) -> Any:  # noqa: A001 - module-level API name
 
     set_runtime(new_cfg, get_provider())
 
-    if parts[0] == "providers":
-        _apply_provider_live(new_cfg)
+    _apply_runtime_live(new_cfg)
 
     return value
 
@@ -165,12 +163,19 @@ def schema() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Live provider propagation
+# Live runtime propagation
 # ---------------------------------------------------------------------------
 
 
+def _apply_runtime_live(new_cfg: Config) -> None:
+    """Push config changes to live runtime components, if registered."""
+    _apply_provider_live(new_cfg)
+    _apply_agent_live(new_cfg)
+    _apply_heartbeat_live(new_cfg)
+
+
 def _apply_provider_live(new_cfg: Config) -> None:
-    """Push OpenAI provider credentials to the running provider, if any."""
+    """Push OpenAI provider settings to the running provider, if any."""
     provider = get_provider()
     if provider is None:
         return
@@ -183,10 +188,54 @@ def _apply_provider_live(new_cfg: Config) -> None:
             api_key=p.api_key,
             api_base=p.api_base,
             extra_headers=p.extra_headers or {},
+            default_model=new_cfg.agents.defaults.model,
         )
         logger.info("Live provider reconfigured")
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to reconfigure live provider: {}", exc)
+
+
+def _apply_agent_live(new_cfg: Config) -> None:
+    """Apply agent defaults to the running agent loop and subagent manager."""
+    agent = get_agent()
+    if agent is None:
+        return
+
+    d = new_cfg.agents.defaults
+    try:
+        agent.model = d.model
+        agent.temperature = d.temperature
+        agent.max_tokens = d.max_tokens
+        agent.max_iterations = d.max_tool_iterations
+        agent.memory_window = d.memory_window
+        agent.reasoning_effort = d.reasoning_effort
+
+        subagents = getattr(agent, "subagents", None)
+        if subagents is not None:
+            subagents.model = d.model
+            subagents.temperature = d.temperature
+            subagents.max_tokens = d.max_tokens
+            subagents.reasoning_effort = d.reasoning_effort
+
+        logger.info("Live agent defaults reconfigured")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to reconfigure live agent defaults: {}", exc)
+
+
+def _apply_heartbeat_live(new_cfg: Config) -> None:
+    """Apply heartbeat settings to the running heartbeat service."""
+    heartbeat = get_heartbeat()
+    if heartbeat is None:
+        return
+
+    hb_cfg = new_cfg.gateway.heartbeat
+    try:
+        heartbeat.model = new_cfg.agents.defaults.model
+        heartbeat.interval_s = hb_cfg.interval_s
+        heartbeat.enabled = hb_cfg.enabled
+        logger.info("Live heartbeat settings reconfigured")
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to reconfigure live heartbeat settings: {}", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +245,7 @@ def _apply_provider_live(new_cfg: Config) -> None:
 
 def get_openai_provider_config() -> dict:
     """Return the current OpenAI provider config as a plain dict."""
-    data = get("providers.openai")
+    data = to_dict("providers.openai")
     return {
         "api_key": data.get("api_key") or "",
         "api_base": data.get("api_base") or "",
@@ -211,9 +260,9 @@ def set_openai_provider_config(
 ) -> dict:
     """Update the OpenAI provider config.  Only non-``None`` args are applied."""
     if api_key is not None:
-        set("providers.openai.api_key", api_key)
+        set_key("providers.openai.api_key", api_key)
     if api_base is not None:
-        set("providers.openai.api_base", api_base or None)
+        set_key("providers.openai.api_base", api_base or None)
     if extra_headers is not None:
-        set("providers.openai.extra_headers", extra_headers or None)
+        set_key("providers.openai.extra_headers", extra_headers or None)
     return get_openai_provider_config()

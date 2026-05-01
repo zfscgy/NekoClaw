@@ -1135,7 +1135,7 @@ class NekoChatChannel(BaseChannel):
 
         ``?key=providers.openai.api_key`` returns only that value.
         """
-        from nekoclaw.manager.config import get as cfg_get
+        from nekoclaw.manager.config import to_dict as cfg_get
         from nekoclaw.manager.config import schema as cfg_schema
 
         key = request.rel_url.query.get("key")
@@ -1154,8 +1154,8 @@ class NekoChatChannel(BaseChannel):
 
     async def _handle_set_config(self, request: Any) -> Any:
         """Apply a ``{key, value}`` mutation and return the refreshed config."""
-        from nekoclaw.manager.config import get as cfg_get
-        from nekoclaw.manager.config import set as cfg_set
+        from nekoclaw.manager.config import to_dict as cfg_get
+        from nekoclaw.manager.config import set_key as cfg_set
 
         try:
             body = await request.json()

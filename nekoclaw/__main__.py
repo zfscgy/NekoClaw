@@ -48,6 +48,7 @@ def _make_provider(config: Config):
 def _load_runtime_config(config_path_str: str | None = None, workspace: str | None = None) -> Config:
     """Load config and optionally override the active workspace."""
     from nekoclaw.config.loader import create_default_configs, load_config, set_config_path
+    from nekoclaw.manager import config
 
     config_path = None
     if config_path_str:
@@ -61,7 +62,7 @@ def _load_runtime_config(config_path_str: str | None = None, workspace: str | No
         if created:
             console.print(f"[dim]Created default config files in {created[0].parent}[/dim]")
 
-    loaded = load_config(config_path)
+    loaded = config.get_global_config()
     if workspace:
         loaded.agents.defaults.workspace = workspace
     return loaded
@@ -208,6 +209,7 @@ def gateway(
         interval_s=hb_cfg.interval_s,
         enabled=hb_cfg.enabled,
     )
+    set_runtime(cfg, provider, agent=agent, heartbeat=heartbeat)
 
     if channels.enabled_channels:
         console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")

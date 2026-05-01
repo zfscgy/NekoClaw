@@ -365,10 +365,6 @@ class AgentLoop:
                     break
                 continue
             else:
-                if is_error_content(response_content):
-                    logger.error("LLM returned error: {}", (response_content or "")[:200])
-                    final_content = response_content or "Sorry, I encountered an error calling the AI model."
-                    break
                 if response_content is None:
                     logger.warning(
                         "LLM returned empty content (content={!r}); "
@@ -376,6 +372,8 @@ class AgentLoop:
                         response_content,
                     )
                 if response_content:
+                    if is_error_content(response_content):
+                        logger.error("LLM returned error: {}", response_content[:200])
                     messages.append(StreamDelta(
                         type="content",
                         content=response_content,
@@ -542,17 +540,8 @@ class AgentLoop:
         if final_content is None:
             # If the agent already replied via the message tool, the response
             # was delivered out-of-band and no fallback content is needed.
-            if "send_message_with_attachments" in tools_used:
-                final_content = ""
-            else:
-                final_content = ("Background task completed." if msg.channel == "system"
-                                 else "I've completed processing but have no response to give.")
-                session.initial_messages.append(StreamDelta(
-                    type="content",
-                    content=final_content,
-                    time=datetime.now(timezone.utc).isoformat(),
-                ))
-                self._save_session(session)
+            if "send_message_with_attachments" not in tools_used:
+                final_content = "Background task completed." if msg.channel == "system" else ""
 
         await self.bus.publish_outbound(OutboundMessage(
             channel=channel, chat_id=chat_id, type="stream_end",
