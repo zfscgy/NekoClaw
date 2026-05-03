@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import lxml.html
 
+from lightsear._encoding import decode_html_body
 from lightsear._xpath import eval_xpath, eval_xpath_getindex, eval_xpath_list, extract_text
 from lightsear.exceptions import CaptchaError, LightsearError
 from lightsear.models import SearchResult
@@ -19,7 +20,7 @@ def _is_ddg_captcha(doc: lxml.html.HtmlElement) -> bool:
 
 
 def _parse_ddg_html(text: str | bytes) -> list[SearchResult]:
-    doc = lxml.html.fromstring(text)
+    doc = lxml.html.fromstring(decode_html_body(text))
     if _is_ddg_captcha(doc):
         raise CaptchaError("DuckDuckGo challenge/CAPTCHA")
 

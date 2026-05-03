@@ -60,11 +60,13 @@
         />
         <button
           class="btn-send"
-          :disabled="(!model.trim() && !readyFiles.length) || disabled || isUploading"
-          title="Send (Enter)"
-          @click="send"
+          :class="{ 'is-stop': running }"
+          :disabled="running ? false : ((!model.trim() && !readyFiles.length) || disabled || isUploading)"
+          :title="running ? 'Stop generation' : 'Send (Enter)'"
+          @click="running ? stop() : send()"
         >
-          <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><path d="M9 16V6.414L5.707 9.707a1 1 0 1 1-1.414-1.414l5-5 .076-.068a1 1 0 0 1 1.338.068l5 5 .068.076a1 1 0 0 1-1.406 1.406l-.076-.068L11 6.414V16a1 1 0 1 1-2 0"/></svg>
+          <svg v-if="running" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="4" width="8" height="8" rx="1.5"/></svg>
+          <svg v-else width="20" height="20" viewBox="0 0 20 20" fill="currentColor"><path d="M9 16V6.414L5.707 9.707a1 1 0 1 1-1.414-1.414l5-5 .076-.068a1 1 0 0 1 1.338.068l5 5 .068.076a1 1 0 0 1-1.406 1.406l-.076-.068L11 6.414V16a1 1 0 1 1-2 0"/></svg>
         </button>
       </div>
     </div>
@@ -86,14 +88,17 @@ interface PendingFile {
 const props = withDefaults(defineProps<{
   modelValue?: string
   disabled?: boolean
+  running?: boolean
 }>(), {
   modelValue: '',
   disabled: false,
+  running: false,
 })
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
   send: [media: string[]]
+  stop: []
 }>()
 
 const model = ref(props.modelValue)
@@ -119,6 +124,10 @@ function send(): void {
   }
   pendingFiles.value = []
   if (fileInputRef.value) fileInputRef.value.value = ''
+}
+
+function stop(): void {
+  emit('stop')
 }
 
 function removeFile(id: number): void {

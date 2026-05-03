@@ -6,6 +6,7 @@ from urllib.parse import urlencode
 
 from lxml import html
 
+from lightsear._encoding import decode_html_body
 from lightsear._xpath import eval_xpath_getindex, eval_xpath_list, extract_text
 from lightsear.exceptions import CaptchaError, LightsearError
 from lightsear.models import SearchResult
@@ -14,7 +15,7 @@ RESULTS_PER_PAGE = 10
 
 
 def _parse_baidu_html(text: str | bytes) -> list[SearchResult]:
-    dom = html.fromstring(text)
+    dom = html.fromstring(decode_html_body(text))
     out: list[SearchResult] = []
 
     # Each organic result is a div with both "result" and "c-container" classes.

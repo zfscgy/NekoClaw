@@ -22,14 +22,14 @@
           v-for="(item, ii) in visible"
           :key="ii"
           class="action-item"
-          :class="item.type === 'tool_call' ? 'is-tool' : 'is-progress'"
+          :class="[
+            item.type === 'tool_call' ? 'is-tool' : 'is-progress',
+            { 'tool-call-clickable': item.type === 'tool_call' && !!item.toolResult },
+          ]"
+          :title="item.type === 'tool_call' && item.toolResult ? 'Click to view result' : ''"
+          @click="item.type === 'tool_call' && item.toolResult && openResult(item)"
         >
-          <span
-            v-if="item.type === 'tool_call'"
-            :class="{ 'tool-call-clickable': !!item.toolResult }"
-            :title="item.toolResult ? 'Click to view result' : ''"
-            @click="item.toolResult && openResult(item)"
-          >
+          <span v-if="item.type === 'tool_call'">
             <span class="tool-name">{{ toolCallName(item.content) }}</span>{{ toolCallRest(item.content) }}
           </span>
           <div v-else-if="item.type === 'reasoning_response'" class="reasoning-response" v-html="renderMarkdown(item.content)"></div>
@@ -77,7 +77,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { toolCallName, toolCallRest, visibleItems, actionGroupLabel, type ActionItem } from '../utils/actions'
+import { toolCallName, toolCallRest, visibleItems, actionGroupLabel, toolResultDetails, type ActionItem, type ToolResultDetails } from '../utils/actions'
 import { renderMarkdown } from '../utils/markdown'
 import type { StreamStatus } from '../composables/useChat'
 
@@ -93,49 +93,10 @@ const emit = defineEmits<{ toggle: [open: boolean] }>()
 const visible = computed(() => visibleItems(props.items))
 const label = computed(() => actionGroupLabel(props.items, visible.value))
 const actionItemsEl = ref<HTMLElement | null>(null)
-
-interface ToolArgEntry {
-  key: string
-  value: string
-}
-
-const activeResult = ref<{ title: string; argEntries: ToolArgEntry[]; body: string } | null>(null)
-
-function formatArgValue(value: unknown): string {
-  if (value == null) return String(value)
-  if (typeof value === 'string') return value
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
-}
-
-function extractArgEntries(item: ActionItem): ToolArgEntry[] {
-  const args = item.toolArguments
-  if (args && typeof args === 'object') {
-    return Object.entries(args).map(([k, v]) => ({ key: k, value: formatArgValue(v) }))
-  }
-  const rest = toolCallRest(item.content ?? '').trim()
-  if (!rest || rest === '()') return []
-  const inner = rest.startsWith('(') && rest.endsWith(')') ? rest.slice(1, -1).trim() : rest
-  if (!inner) return []
-  try {
-    const parsed = JSON.parse(inner)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
-      return Object.entries(parsed).map(([k, v]) => ({ key: k, value: formatArgValue(v) }))
-  } catch { /* ignore */ }
-  return [{ key: 'raw', value: inner }]
-}
+const activeResult = ref<ToolResultDetails | null>(null)
 
 function openResult(item: ActionItem): void {
-  if (!item.toolResult) return
-  const name = item.toolName || toolCallName(item.content ?? '') || 'Tool'
-  activeResult.value = {
-    title: `${name} 执行结果`,
-    argEntries: extractArgEntries(item),
-    body: item.toolResult,
-  }
+  activeResult.value = toolResultDetails(item)
 }
 
 function closeResult(): void {

@@ -12,6 +12,7 @@ import urllib.request
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
+from lightsear._encoding import decode_html_body
 from lightsear.engines.baidu import search_baidu
 from lightsear.engines.bing import search_bing
 from lightsear.engines.duckduckgo import search_duckduckgo
@@ -374,7 +375,7 @@ def web_fetch(
 
     _ensure_chromium_alive()
     response = _get_pool().submit(_run_web_fetch, url, wait).result()
-    html_text = response.body.decode("utf-8", errors="replace")
+    html_text = decode_html_body(response.body)
     cleaned_html = _strip_scripts_and_styles(html_text)
     if mode == "markdown":
         return to_markdown(cleaned_html)

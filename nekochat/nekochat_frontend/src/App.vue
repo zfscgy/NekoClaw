@@ -51,6 +51,16 @@
                   :stream-status="group.streamStatus"
                   @toggle="setGroupOpen(group.key, $event)"
                 />
+                <SubagentLine
+                  v-else-if="group.type === 'subagent_status'"
+                  :label="group.label"
+                  :event="group.event"
+                  :status="group.status"
+                  :report="group.report"
+                  :task="group.task"
+                  :append-cursor="group.appendCursor"
+                  :stream-status="group.streamStatus"
+                />
                 <MessageBubble
                   v-else
                   :role="group.role"
@@ -76,8 +86,10 @@
 
           <ChatInput
             v-model="inputText"
-            :disabled="isTyping || !activeId"
+            :disabled="isSessionRunning || !activeId"
+            :running="isSessionRunning"
             @send="onSend"
+            @stop="stopGeneration"
           />
         </div>
 
@@ -118,10 +130,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ActionGroup from './components/ActionGroup.vue'
 import MessageBubble from './components/MessageBubble.vue'
+import SubagentLine from './components/SubagentLine.vue'
 import ChatInput from './components/ChatInput.vue'
 import EmptyState from './components/EmptyState.vue'
 import Lightbox from './components/Lightbox.vue'
@@ -179,6 +192,7 @@ const {
   inputText,
   isTyping,
   isStreaming,
+  streamActive,
   wsStatus,
   wsStatusLabel,
   lightboxSrc,
@@ -192,9 +206,12 @@ const {
   deleteConversation,
   sendMessage,
   sendCommand,
+  stopGeneration,
   openLightbox,
   autoResize,
 } = useChat()
+
+const isSessionRunning = computed(() => isTyping.value || streamActive.value)
 
 function onSend(media: string[] = []) {
   sendMessage(media)

@@ -72,6 +72,22 @@ class SessionManager:
         safe_key = safe_filename(key.replace(":", "_"))
         return self.sessions_dir / f"{safe_key}.jsonl"
 
+    def _get_bin_path(self, path: Path) -> Path:
+        """Return a collision-free path in the session bin directory."""
+        bin_dir = self.sessions_dir / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        candidate = bin_dir / path.name
+        if not candidate.exists():
+            return candidate
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate = bin_dir / f"{path.stem}_{stamp}{path.suffix}"
+        counter = 1
+        while candidate.exists():
+            candidate = bin_dir / f"{path.stem}_{stamp}_{counter}{path.suffix}"
+            counter += 1
+        return candidate
+
     def get_media_dir(self, key: str) -> Path:
         """Return (and create) the media directory for a session."""
         safe_key = safe_filename(key.replace(":", "_"))
@@ -174,6 +190,21 @@ class SessionManager:
     def invalidate(self, key: str) -> None:
         """Remove a session from the in-memory cache."""
         self._cache.pop(key, None)
+
+    def delete_session(self, key: str) -> Path | None:
+        """Move a session file to the bin folder and drop it from cache.
+
+        Returns the destination path when a file was moved, otherwise ``None``.
+        """
+        path = self._get_session_path(key)
+        self.invalidate(key)
+        if not path.exists():
+            return None
+
+        dest = self._get_bin_path(path)
+        shutil.move(str(path), str(dest))
+        logger.info("Moved session {} to {}", key, dest)
+        return dest
 
     def list_sessions(self) -> list[dict[str, Any]]:
         """

@@ -1,4 +1,5 @@
 import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
+import { isSubagentToolCall } from '../utils/actions'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -16,9 +17,10 @@ export interface Conversation {
 }
 
 export interface ChatMessage {
-  type: 'content' | 'think' | 'tool_call' | 'reasoning_response'
+  type: 'content' | 'think' | 'tool_call' | 'tool_call_results' | 'reasoning_response' | 'subagent_status'
   role?: string
   content?: string
+  results?: ToolCallResultPayload[]
   media?: string[]
   conversation_id?: string
   _replay?: boolean
@@ -30,6 +32,13 @@ export interface ChatMessage {
   toolResult?: string
   // Raw arguments dict for tool_call, used to render the args panel.
   toolArguments?: Record<string, unknown>
+  subagentId?: string
+  subagentSessionId?: string
+  subagentLabel?: string
+  subagentEvent?: 'started' | 'finished'
+  subagentStatus?: 'running' | 'ok' | 'error'
+  subagentReport?: string
+  subagentTask?: string
 }
 
 interface ToolCallSlot {
@@ -63,7 +72,20 @@ export interface ActionsGroup {
   streamStatus?: StreamStatus
 }
 
-export type MessageGroup = ContentGroup | ActionsGroup
+export interface SubagentStatusGroup {
+  type: 'subagent_status'
+  subagentId?: string
+  subagentSessionId?: string
+  label: string
+  event: 'started' | 'finished'
+  status: 'running' | 'ok' | 'error'
+  report?: string
+  task?: string
+  appendCursor?: boolean
+  streamStatus?: StreamStatus
+}
+
+export type MessageGroup = ContentGroup | ActionsGroup | SubagentStatusGroup
 
 // Tool call payload from the backend (matches ToolCallRequest fields)
 interface ToolCallPayload {
@@ -93,7 +115,7 @@ type WsMessage =
   | { type: 'subagent_start'; subagent_id: string; label: string; conversation_id?: string; _replay?: boolean }
   | { type: 'subagent_delta'; subagent_id: string; delta_type: 'thinking' | 'content' | 'tool_call' | 'tool_call_results'; content?: string | ToolCallPayload; results?: ToolCallResultPayload[]; conversation_id?: string }
   | { type: 'subagent_end'; subagent_id: string; status: string; conversation_id?: string }
-  | { type: 'subagent_ref'; session_id: string; label: string; status: string; task?: string; conversation_id?: string; _replay?: boolean }
+  | { type: 'subagent_ref'; session_id: string; label: string; status: string; task?: string; announce?: string; conversation_id?: string; _replay?: boolean }
 
 export interface SubagentState {
   id: string
@@ -198,6 +220,60 @@ function _extractSpawnLabel(result: string): string | null {
   return m ? m[1] : null
 }
 
+function _normalizeSubagentStatus(status: string | undefined): 'ok' | 'error' {
+  return status === 'error' ? 'error' : 'ok'
+}
+
+function _subagentLabelFromTool(entry: ChatMessage | null, fallback: string): string {
+  const args = entry?.toolArguments
+  const label = args?.label
+  const task = args?.task
+  if (typeof label === 'string' && label.trim()) return label.trim()
+  if (typeof task === 'string' && task.trim())
+    return task.length > 30 ? `${task.slice(0, 30)}...` : task
+  return fallback
+}
+
+function _isSubagentToolResult(result: ToolCallResultPayload): boolean {
+  return result.name === 'call_subagent' || result.name === 'spawn' || !!_extractSpawnSessionId(result.content)
+}
+
+function _pushSubagentStatus(
+  arr: ChatMessage[],
+  cid: string,
+  item: {
+    id?: string
+    sessionId?: string
+    label: string
+    event: 'started' | 'finished'
+    status: 'running' | 'ok' | 'error'
+    report?: string
+    task?: string
+  },
+): void {
+  const exists = arr.some(m =>
+    m.type === 'subagent_status' &&
+    m.subagentEvent === item.event &&
+    (
+      (item.sessionId && m.subagentSessionId === item.sessionId) ||
+      (item.id && m.subagentId === item.id)
+    )
+  )
+  if (exists) return
+
+  arr.push({
+    type: 'subagent_status',
+    conversation_id: cid,
+    subagentId: item.id,
+    subagentSessionId: item.sessionId,
+    subagentLabel: item.label,
+    subagentEvent: item.event,
+    subagentStatus: item.status,
+    subagentReport: item.report,
+    subagentTask: item.task,
+  })
+}
+
 function _tryConvertMessageToolCall(entry: ChatMessage, cid: string): ChatMessage | null {
   if (entry.type !== 'tool_call') return null
   const raw = entry.content || ''
@@ -283,9 +359,33 @@ export function useChat() {
     while (i < msgs.length) {
       const m = msgs[i]
 
+      if (m.type === 'tool_call' && isSubagentToolCall(m)) {
+        i++
+        continue
+      }
+
+      if (m.type === 'subagent_status') {
+        groups.push({
+          type: 'subagent_status',
+          subagentId: m.subagentId,
+          subagentSessionId: m.subagentSessionId,
+          label: m.subagentLabel || m.subagentSessionId || m.subagentId || 'subagent',
+          event: m.subagentEvent || 'finished',
+          status: m.subagentStatus || 'ok',
+          report: m.subagentReport,
+          task: m.subagentTask,
+        })
+        i++
+        continue
+      }
+
       if (m.type === 'tool_call' || m.type === 'think' || m.type === 'reasoning_response') {
         const items: ChatMessage[] = []
-        while (i < msgs.length && (msgs[i].type === 'tool_call' || msgs[i].type === 'think' || msgs[i].type === 'reasoning_response')) {
+        while (
+          i < msgs.length &&
+          (msgs[i].type === 'tool_call' || msgs[i].type === 'think' || msgs[i].type === 'reasoning_response') &&
+          !(msgs[i].type === 'tool_call' && isSubagentToolCall(msgs[i]))
+        ) {
           items.push(msgs[i])
           i++
         }
@@ -403,18 +503,33 @@ export function useChat() {
    */
   function _applyToolCallResults(arr: ChatMessage[], cid: string, results: ToolCallResultPayload[]): void {
     for (const r of results) {
+      let matchedEntry: ChatMessage | null = null
       if (r.tool_call_id) {
         for (let i = arr.length - 1; i >= 0; i--) {
           const entry = arr[i]
           if (entry.type === 'tool_call' && entry.toolCallId === r.tool_call_id) {
             arr[i] = { ...entry, toolResult: r.content, toolName: entry.toolName || r.name }
+            matchedEntry = arr[i]
             break
           }
         }
       }
 
-      if (r.name === 'spawn') {
+      if (_isSubagentToolResult(r)) {
         const sessionId = _extractSpawnSessionId(r.content)
+        const plainId = sessionId?.replace(/^subagent:/, '') || r.tool_call_id
+        if (plainId) {
+          const label = _extractSpawnLabel(r.content) || _subagentLabelFromTool(matchedEntry, plainId)
+          _pushSubagentStatus(arr, cid, {
+            id: plainId,
+            sessionId: sessionId || undefined,
+            label,
+            event: 'started',
+            status: 'running',
+            task: typeof matchedEntry?.toolArguments?.task === 'string' ? matchedEntry.toolArguments.task : undefined,
+          })
+        }
+
         if (sessionId) {
           if (!subagents.value[cid]) subagents.value[cid] = []
           const plainId = sessionId.replace(/^subagent:/, '')
@@ -424,7 +539,7 @@ export function useChat() {
           if (!existing) {
             subagents.value[cid].push({
               id: plainId,
-              label: _extractSpawnLabel(r.content) || plainId,
+              label: _extractSpawnLabel(r.content) || _subagentLabelFromTool(matchedEntry, plainId),
               status: 'running',
               items: [],
               sessionId,
@@ -437,6 +552,55 @@ export function useChat() {
         }
       }
     }
+  }
+
+  function _applySubagentHistoryResults(items: ChatMessage[], cid: string): ChatMessage[] {
+    const hydrated: ChatMessage[] = []
+    for (const entry of items) {
+      if (entry.type === 'tool_call') {
+        const converted = _toolCallPayloadToChatMessage(entry.content, cid, {
+          tool_call_id: entry.toolCallId,
+          tool_name: entry.toolName,
+        })
+        hydrated.push(converted || entry)
+      } else if (entry.type === 'tool_call_results') {
+        const results = (entry as unknown as { results?: ToolCallResultPayload[] }).results || []
+        if (results.length) _applyToolCallResults(hydrated, cid, results)
+      } else {
+        hydrated.push(entry)
+      }
+    }
+    return hydrated
+  }
+
+  function _handleSubagentToolCallDelta(sub: SubagentState, cid: string, tc: ToolCallPayload): void {
+    const chatMsg = _toolCallPayloadToChatMessage(tc, cid)
+    if (!chatMsg) return
+    const lastIdx = sub.items.length - 1
+    const last = lastIdx >= 0 ? sub.items[lastIdx] : null
+
+    if (tc.partial) {
+      if (last?.type === 'tool_call' && (!tc.id || !last.toolCallId || last.toolCallId === tc.id)) {
+        sub.items[lastIdx] = { ...last, ...chatMsg }
+      } else {
+        sub.items.push(chatMsg)
+      }
+      return
+    }
+
+    if (
+      last?.type === 'tool_call' &&
+      !last.toolResult &&
+      (
+        (chatMsg.toolCallId && last.toolCallId === chatMsg.toolCallId) ||
+        (!last.toolCallId && last.toolName === chatMsg.toolName)
+      )
+    ) {
+      sub.items[lastIdx] = { ...last, ...chatMsg }
+      return
+    }
+
+    sub.items.push(chatMsg)
   }
 
   function _updatePreview(cid: string, content: string | undefined): void {
@@ -455,7 +619,7 @@ export function useChat() {
       const subs = subagents.value[cid] || []
       const sub = subs.find(s => s.sessionId === sessionId || s.id === plainId)
       if (sub && data.history) {
-        sub.items = data.history
+        sub.items = _applySubagentHistoryResults(data.history, cid)
         sub.sessionId = sessionId
         subagents.value = { ...subagents.value }
       }
@@ -602,7 +766,7 @@ export function useChat() {
         }
 
         case 'subagent_delta': {
-          const sdMsg = msg as { subagent_id: string; delta_type: string; content?: string | ToolCallPayload }
+          const sdMsg = msg as { subagent_id: string; delta_type: string; content?: string | ToolCallPayload; results?: ToolCallResultPayload[] }
           const subs = subagents.value[cid] || []
           const sub = subs.find(s => s.id === sdMsg.subagent_id)
           if (sub) {
@@ -613,15 +777,11 @@ export function useChat() {
             } else if (sdMsg.delta_type === 'tool_call') {
               const tcPayload = sdMsg.content as ToolCallPayload
               if (tcPayload && typeof tcPayload === 'object') {
-                const formatted = _formatToolCall({ name: tcPayload.name || '', arguments: _stringifyToolArguments(tcPayload.arguments) })
-                if (!tcPayload.partial) {
-                  sub.items.push({ type: 'tool_call', content: formatted, conversation_id: cid })
-                } else {
-                  _appendStreamText(sub.items, 'tool_call', undefined, '')
-                  const last = sub.items[sub.items.length - 1]
-                  if (last) last.content = formatted
-                }
+                _handleSubagentToolCallDelta(sub, cid, tcPayload)
               }
+            } else if (sdMsg.delta_type === 'tool_call_results') {
+              const results = sdMsg.results || []
+              if (results.length) _applyToolCallResults(sub.items, cid, results)
             }
             subagents.value = { ...subagents.value }
           }
@@ -641,17 +801,27 @@ export function useChat() {
         }
 
         case 'subagent_ref': {
-          const refMsg = msg as { session_id: string; label: string; status: string; task?: string }
+          const refMsg = msg as { session_id: string; label: string; status: string; task?: string; announce?: string }
           if (!subagents.value[cid]) subagents.value[cid] = []
           const plainId = refMsg.session_id.replace(/^subagent:/, '')
           const existing = subagents.value[cid].find(s =>
             s.id === plainId || s.sessionId === refMsg.session_id
           )
-          const finalStatus = (refMsg.status as 'ok' | 'error') || 'ok'
+          const finalStatus = _normalizeSubagentStatus(refMsg.status)
+          const label = refMsg.label || refMsg.session_id
+          _pushSubagentStatus(arr, cid, {
+            id: plainId,
+            sessionId: refMsg.session_id,
+            label,
+            event: 'finished',
+            status: finalStatus,
+            report: refMsg.announce,
+            task: refMsg.task,
+          })
           if (!existing) {
             subagents.value[cid].push({
               id: plainId,
-              label: refMsg.label || refMsg.session_id,
+              label,
               status: finalStatus,
               items: [],
               sessionId: refMsg.session_id,
@@ -805,6 +975,18 @@ export function useChat() {
     }
   }
 
+  async function stopGeneration(): Promise<void> {
+    if (!activeId.value) return
+    const cid = activeId.value
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'stop' }))
+    } else {
+      try {
+        await fetch(`/api/conversations/${cid}/stop`, { method: 'POST' })
+      } catch (_) {}
+    }
+  }
+
   function _isAtBottom(el: HTMLElement): boolean {
     return el.scrollHeight - el.scrollTop - el.clientHeight <= SCROLL_BOTTOM_TOLERANCE
   }
@@ -917,6 +1099,7 @@ export function useChat() {
     inputText,
     isTyping,
     isStreaming,
+    streamActive,
     streamDone,
     wsStatus,
     wsStatusLabel,
@@ -931,6 +1114,7 @@ export function useChat() {
     deleteConversation,
     sendMessage,
     sendCommand,
+    stopGeneration,
     openLightbox,
     autoResize,
     scrollToBottom,

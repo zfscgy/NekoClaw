@@ -12,7 +12,7 @@ Typical usage::
     current = mcfg.get("providers.openai")
 """
 
-from nekoclaw.manager import config
+from nekoclaw.manager import config, sessions
 from nekoclaw.manager.runtime import (
     get_config,
     get_provider,
@@ -21,6 +21,7 @@ from nekoclaw.manager.runtime import (
 
 __all__ = [
     "config",
+    "sessions",
     "get_config",
     "get_provider",
     "set_runtime",

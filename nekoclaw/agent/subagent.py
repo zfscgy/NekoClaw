@@ -134,13 +134,46 @@ class SubagentManager:
             session.messages.append(StreamDelta(type="user", content=task))
             self.sessions.save(session)
 
-            max_iterations = 15
+            max_iterations = 50
+            report_retry_limit = 3
             iteration = 0
+            report_retry_count = 0
             final_result: str | None = None
             final_status = "error"
-            reminder = "Continue the task and remember to call ReportTask when task is finished"
+            reminder = (
+                "Continue the task and remember to call ReportTask when task is finished. "
+                "The main agent can only see the content you send through ReportTask."
+            )
+            report_retry_prompt = dedent("""
+                You have reached the subagent iteration limit without calling ReportTask.
+                Do not continue normal task work. Call the ReportTask tool now with the best available final status, output, actions, and products. 
+                The main agent can only see content included in ReportTask, not your other messages.
+                If there is too much detail to include directly, save it to a file and report the file path in ReportTask.
+                If the task is incomplete, call ReportTask with success=false and explain what partial results or files may need review."
+                """)
 
-            while iteration < max_iterations:
+            while True:
+                # The iteration limit is reached, force the subagent to generate the report
+                if iteration >= max_iterations:
+                    if report_tool.report is not None:
+                        break
+                    if report_retry_count >= report_retry_limit:
+                        break
+
+                    report_retry_count += 1
+                    retry_message = (
+                        f"{report_retry_prompt}\n\n"
+                        f"ReportTask retry {report_retry_count}/{report_retry_limit}."
+                    )
+                    messages.append(StreamDelta(type="user", content=retry_message))
+                    session.messages.append(StreamDelta(type="user", content=retry_message))
+                    self.sessions.save(session)
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=channel, chat_id=chat_id,
+                        type="clear_unsent_buffer",
+                        metadata=sub_meta,
+                    ))
+
                 iteration += 1
 
                 from nekoclaw.providers.base import delta_to_openai
@@ -267,10 +300,11 @@ class SubagentManager:
                     continue
 
             if final_result is None:
-                final_result = (
-                    "Subagent stopped without calling ReportTask. "
-                    "No final task report was sent by the subagent."
-                )
+                final_result = dedent(f"""\
+                    Subagent failed after reaching the iteration limit and did not call ReportTask after {report_retry_limit} retry attempts.
+                    Main agent action required: check the subagent session and workspace for partial results or artifacts, such as files created or edited, before deciding what to tell the user.
+                    """)
+           
 
             self.sessions.save(session)
             logger.info("Subagent [{}] completed with status {}", task_id, final_status)
@@ -312,17 +346,16 @@ class SubagentManager:
         status_text = "completed successfully" if status == "ok" else "failed"
         session_key = f"subagent:{task_id}"
 
-        announce_content = dedent(f"""
+        announce_content = dedent(f"""\
             [Subagent '{label}' {status_text}]
 
-            Task: {task}
-
             Result:
-            {result}
-
+            ------------------
+            """) + result + dedent(f"""
+            ------------------
             Summarize this naturally for the user. Keep it brief (1-2 sentences).
             Do not mention technical details like "subagent" or task IDs.
-            """).strip()
+            """)
 
         msg = InboundMessage(
             channel="system",
@@ -344,7 +377,7 @@ class SubagentManager:
     @staticmethod
     def _format_task_report(report: dict[str, Any]) -> str:
         """Format a ReportTask payload for the main agent."""
-        return dedent(f"""
+        return dedent(f"""\
             Success: {report["success"]}
 
             Output:
@@ -355,7 +388,7 @@ class SubagentManager:
 
             Products:
             {report["products"]}
-            """).strip()
+            """)
 
     def _build_subagent_prompt(self) -> str:
         """Build a focused system prompt for the subagent."""
@@ -363,19 +396,17 @@ class SubagentManager:
         from nekoclaw.agent.skills import SkillsLoader
 
         time_ctx = ContextBuilder._build_runtime_context(None, None)
-        parts = [dedent(f"""
+        parts = [dedent(f"""\
             # Subagent
-
             {time_ctx}
-
             You are a subagent spawned by the main agent to complete a specific task.
-            Stay focused on the assigned task. You must call the ReportTask tool when
-            the task is finished or cannot be completed. Do not finish with a plain
-            text final response.
-
+            Stay focused on the assigned task. You must call the ReportTask tool when the task is finished or cannot be completed. 
+            Do not finish with a plain text final response.
+            The main agent can only see the content you include in the ReportTask tool call. It cannot see your other content messages.
+            If you have a large amount of content, save it to a file and include the file path in ReportTask so the main agent can retrieve it.
             ## Workspace
             {self.workspace}
-            """).strip()]
+            """)]
 
         skills_summary = SkillsLoader(self.workspace).build_skills_summary()
         if skills_summary:

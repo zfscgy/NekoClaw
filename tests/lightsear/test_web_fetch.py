@@ -4,6 +4,7 @@ import types
 import pytest
 
 import lightsear
+from lightsear._encoding import decode_html_body
 
 
 def test_web_fetch_uses_session_pool_and_markdownify(monkeypatch: pytest.MonkeyPatch):
@@ -78,6 +79,24 @@ def test_web_fetch_text_removes_css_and_js(monkeypatch: pytest.MonkeyPatch):
 def test_web_fetch_rejects_unknown_mode():
     with pytest.raises(ValueError, match="mode must be 'markdown' or 'text'"):
         lightsear.web_fetch("https://example.com", mode="html")  # type: ignore[arg-type]
+
+
+def test_decode_html_body_uses_declared_chinese_encoding():
+    body = (
+        '<html><head><meta charset="gb2312"></head>'
+        "<body><h1>中文标题</h1></body></html>"
+    ).encode("gb18030")
+
+    assert "中文标题" in decode_html_body(body)
+
+
+def test_decode_html_body_prefers_valid_utf8_over_stale_meta_charset():
+    body = (
+        '<html><head><meta charset="gb2312"></head>'
+        "<body><h1>中文标题</h1></body></html>"
+    ).encode()
+
+    assert "中文标题" in decode_html_body(body)
 
 
 def test_web_fetch_requires_pool_init(monkeypatch: pytest.MonkeyPatch):

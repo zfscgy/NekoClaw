@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from lxml import html
 
+from lightsear._encoding import decode_html_body
 from lightsear._xpath import eval_xpath, eval_xpath_getindex, eval_xpath_list, extract_text
 from lightsear.exceptions import LightsearError
 from lightsear.models import SearchResult
@@ -15,7 +16,7 @@ BING_SEARCH = "https://www.bing.com/search"
 
 
 def _parse_bing_html(text: str | bytes) -> list[SearchResult]:
-    dom = html.fromstring(text)
+    dom = html.fromstring(decode_html_body(text))
     out: list[SearchResult] = []
 
     for item in eval_xpath_list(dom, '//ol[@id="b_results"]/li[contains(@class, "b_algo")]'):

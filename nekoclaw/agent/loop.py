@@ -148,11 +148,11 @@ class AgentLoop:
         inbox: asyncio.Queue[InboundMessage],
         session: Session,
         messages: list[StreamDelta],
-    ) -> bool:
+    ) -> list[StreamDelta]:
         """Drain any queued in-flight messages for this session and append them
-        as ``user`` turns to *messages*. Returns ``True`` if any were injected.
+        as ``user`` turns to *messages*. Returns the injected deltas.
         """
-        injected = False
+        injected: list[StreamDelta] = []
         while not inbox.empty():
             try:
                 pending = inbox.get_nowait()
@@ -172,7 +172,7 @@ class AgentLoop:
                     media=media_paths or [],
                 )
             messages.append(delta)
-            injected = True
+            injected.append(delta)
         return injected
 
     def _release_session_inbox(self, session_key: str) -> None:
@@ -251,8 +251,18 @@ class AgentLoop:
                     final_content = "Paused by user."
                 break
 
-            if inbox is not None and self._drain_inbox_into_messages(inbox, session, messages):
-                self._save_session(session)
+            if inbox is not None:
+                injected = self._drain_inbox_into_messages(inbox, session, messages)
+                if injected:
+                    self._save_session(session)
+                    for delta in injected:
+                        if delta.type == "subagent_ref":
+                            await self.bus.publish_outbound(OutboundMessage(
+                                channel=channel,
+                                chat_id=chat_id,
+                                type="delta",
+                                msg=delta,
+                            ))
 
             iteration += 1
 
@@ -346,13 +356,15 @@ class AgentLoop:
                     tool_results.append(ToolCallResult(
                         tool_call_id=tool_call.id, name=tool_call.name, content=result,
                     ))
-                messages.append(StreamDelta(type="tool_call_results", content=tool_results))
 
-                await self.bus.publish_outbound(OutboundMessage(
-                    channel=channel, chat_id=chat_id,
-                    type="delta",
-                    msg=StreamDelta(type="tool_call_results", content=tool_results),
-                ))
+                if tool_results:
+                    messages.append(StreamDelta(type="tool_call_results", content=tool_results))
+
+                    await self.bus.publish_outbound(OutboundMessage(
+                        channel=channel, chat_id=chat_id,
+                        type="delta",
+                        msg=StreamDelta(type="tool_call_results", content=tool_results),
+                    ))
 
                 self._save_session(session)
                 await self.bus.publish_outbound(OutboundMessage(
@@ -477,6 +489,23 @@ class AgentLoop:
             key = session_key or msg.session_key
 
         session = self.sessions.get_or_create(key)
+
+        initial_subagent_ref = self._subagent_ref_delta(msg) if msg.type == "subagent" else None
+        if initial_subagent_ref is not None and isinstance(initial_subagent_ref.content, dict):
+            session_id = initial_subagent_ref.content.get("session_id")
+            ref_exists = any(
+                m.type == "subagent_ref"
+                and isinstance(m.content, dict)
+                and m.content.get("session_id") == session_id
+                for m in session.messages
+            )
+            if not ref_exists:
+                await self.bus.publish_outbound(OutboundMessage(
+                    channel=channel,
+                    chat_id=chat_id,
+                    type="delta",
+                    msg=initial_subagent_ref,
+                ))
 
         if msg.channel != "system":
             unconsolidated = len(session.messages) - session.last_consolidated

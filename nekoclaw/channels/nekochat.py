@@ -298,6 +298,7 @@ class NekoChatChannel(BaseChannel):
                     "label": ref.get("label", ""),
                     "status": ref.get("status", "ok"),
                     "task": ref.get("task", ""),
+                    "announce": ref.get("announce", ""),
                     "conversation_id": cid,
                 })
 
@@ -391,6 +392,19 @@ class NekoChatChannel(BaseChannel):
                 "content": delta.content,
                 "conversation_id": conversation_id,
                 "_delta": True,
+            })
+            return
+
+        if delta.type == "subagent_ref" and isinstance(delta.content, dict):
+            ref = delta.content
+            await self._broadcast(conversation_id, {
+                "type": "subagent_ref",
+                "session_id": ref.get("session_id", ""),
+                "label": ref.get("label", ""),
+                "status": ref.get("status", "ok"),
+                "task": ref.get("task", ""),
+                "announce": ref.get("announce", ""),
+                "conversation_id": conversation_id,
             })
             return
 
@@ -717,6 +731,7 @@ class NekoChatChannel(BaseChannel):
         app.router.add_post("/api/conversations", self._handle_new_conversation)
         app.router.add_get("/api/conversations/{conversation_id}/history", self._handle_history)
         app.router.add_delete("/api/conversations/{conversation_id}", self._handle_delete_conversation)
+        app.router.add_post("/api/conversations/{conversation_id}/stop", self._handle_stop_conversation)
         app.router.add_post("/api/conversations/{conversation_id}/message", self._handle_http_message)
         app.router.add_get("/api/subagent/{session_id}/history", self._handle_subagent_history)
         app.router.add_post("/api/upload", self._handle_upload)
@@ -916,11 +931,35 @@ class NekoChatChannel(BaseChannel):
                     "partial": bool(tc.get("partial", False)),
                 }
                 ui.append({"type": "tool_call", "content": tc_content})
+            elif dtype == "tool_call_results" and isinstance(raw, list):
+                results: list[dict[str, Any]] = []
+                for r in raw:
+                    if isinstance(r, dict):
+                        results.append({
+                            "tool_call_id": r.get("tool_call_id", ""),
+                            "name": r.get("name", ""),
+                            "content": r.get("content", ""),
+                        })
+                if results:
+                    ui.append({"type": "tool_call_results", "results": results})
         return ui
 
     async def _handle_delete_conversation(self, request: Any) -> Any:
         cid = request.match_info["conversation_id"]
+        if cid in self._active_streams:
+            await self._request_stop(cid)
         self._active_streams.discard(cid)
+        self._stream_segments.pop(cid, None)
+        self._cur_round.pop(cid, None)
+        self._subagent_state.pop(cid, None)
+
+        from nekoclaw.manager.sessions import delete_session
+        result = delete_session(f"{self.name}:{cid}")
+        return aiohttp_web.json_response({"ok": True, **result})
+
+    async def _handle_stop_conversation(self, request: Any) -> Any:
+        cid = request.match_info["conversation_id"]
+        await self._request_stop(cid)
         return aiohttp_web.json_response({"ok": True})
 
     async def _handle_http_message(self, request: Any) -> Any:
@@ -998,6 +1037,17 @@ class NekoChatChannel(BaseChannel):
             media=agent_media,
             metadata={"conversation_id": conversation_id, "_streaming": True},
         )
+
+    async def _request_stop(self, conversation_id: str) -> None:
+        """Ask the agent loop to stop the current turn at the next boundary."""
+        await self.bus.publish_inbound(InboundMessage(
+            channel=self.name,
+            sender_id="user",
+            chat_id=conversation_id,
+            content="",
+            metadata={"conversation_id": conversation_id, "_stop": True},
+            type="user_pause",
+        ))
 
     # ------------------------------------------------------------------
     # WebSocket handler
@@ -1118,6 +1168,8 @@ class NekoChatChannel(BaseChannel):
                                 "conversation_id": cid,
                             })
                             await self._handle_message_internal(cid, content, media)
+                    elif msg_type == "stop":
+                        await self._request_stop(cid)
                 elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
                     break
         finally:

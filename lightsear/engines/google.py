@@ -8,6 +8,7 @@ from urllib.parse import urlencode, urlparse
 
 from lxml import html
 
+from lightsear._encoding import decode_html_body
 from lightsear._xpath import eval_xpath, eval_xpath_getindex, eval_xpath_list, extract_text
 from lightsear.exceptions import CaptchaError, LightsearError
 from lightsear.models import SearchResult
@@ -40,7 +41,7 @@ def _parse_google_html(text: str | bytes, final_url: str) -> list[SearchResult]:
     if (parsed.hostname or "").lower() == "sorry.google.com" or (parsed.path or "").startswith("/sorry"):
         raise CaptchaError("Google returned sorry/captcha page")
 
-    dom = html.fromstring(text)
+    dom = html.fromstring(decode_html_body(text))
     out: list[SearchResult] = []
 
     # Each organic result in the rendered DOM has an <h3> inside #rso.

@@ -62,7 +62,7 @@ class AgentDefaults(Base):
         description="Locale for bundled workspace templates synced on startup (en or cn).",
     )
     model: str = "gpt-5.4"
-    max_tokens: int = 8192
+    max_tokens: int = 32768
     temperature: float = 0.1
     max_tool_iterations: int = 40
     memory_window: int = 100
