@@ -377,18 +377,11 @@ class SubagentManager:
     @staticmethod
     def _format_task_report(report: dict[str, Any]) -> str:
         """Format a ReportTask payload for the main agent."""
-        return dedent(f"""\
-            Success: {report["success"]}
-
-            Output:
-            {report["output"]}
-
-            Actions:
-            {report["actions"]}
-
-            Products:
-            {report["products"]}
-            """)
+        return \
+            f"Success: {report['success']}"\
+            f"Output:\n{report['output']}\n\n"\
+            f"Actions:\n{report['actions']}\n\n"\
+            f"Products:\n{report['products']}"
 
     def _build_subagent_prompt(self) -> str:
         """Build a focused system prompt for the subagent."""

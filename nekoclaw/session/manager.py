@@ -191,11 +191,24 @@ class SessionManager:
         """Remove a session from the in-memory cache."""
         self._cache.pop(key, None)
 
-    def delete_session(self, key: str) -> Path | None:
-        """Move a session file to the bin folder and drop it from cache.
+    @staticmethod
+    def _subagent_keys_from_session(session: Session | None) -> set[str]:
+        """Return subagent session keys referenced by a parent session."""
+        if session is None:
+            return set()
 
-        Returns the destination path when a file was moved, otherwise ``None``.
-        """
+        keys: set[str] = set()
+        for msg in session.messages:
+            if msg.type != "subagent_ref" or not isinstance(msg.content, dict):
+                continue
+
+            session_id = msg.content.get("session_id")
+            if isinstance(session_id, str) and session_id.startswith("subagent:"):
+                keys.add(session_id)
+        return keys
+
+    def _move_session_to_bin(self, key: str) -> Path | None:
+        """Move a single session file to the bin folder and drop it from cache."""
         path = self._get_session_path(key)
         self.invalidate(key)
         if not path.exists():
@@ -204,6 +217,20 @@ class SessionManager:
         dest = self._get_bin_path(path)
         shutil.move(str(path), str(dest))
         logger.info("Moved session {} to {}", key, dest)
+        return dest
+
+    def delete_session(self, key: str) -> Path | None:
+        """Move a session file and its subagent session files to the bin folder.
+
+        Returns the destination path when a file was moved, otherwise ``None``.
+        """
+        session = self._cache.get(key) or self._load(key)
+        subagent_keys = self._subagent_keys_from_session(session)
+
+        dest = self._move_session_to_bin(key)
+        for subagent_key in sorted(subagent_keys):
+            self._move_session_to_bin(subagent_key)
+
         return dest
 
     def list_sessions(self) -> list[dict[str, Any]]:
