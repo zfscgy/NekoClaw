@@ -1,3 +1,4 @@
+# AutoCython No Compile
 """Cron types."""
 
 from dataclasses import dataclass, field

@@ -21,13 +21,11 @@ packpy/
     │   ├── typing_extensions-*.whl
     │   └── xlsxwriter-*.whl
     └── .venvs/                      install.ps1 生成的虚拟环境目录
-        ├── main/                    nekoclaw 运行时环境
-        │   ├── Include/
-        │   ├── Lib/site-packages/
-        │   ├── Scripts/             含 python.exe / pip.exe / Activate.ps1 等
-        │   └── pyvenv.cfg
         └── dev/                     用户脚本执行环境
-            └── ...
+            ├── Include/
+            ├── Lib/site-packages/
+            ├── Scripts/             含 python.exe / pip.exe / Activate.ps1 等
+            └── pyvenv.cfg
 ```
 
 > 说明：`.venvs/`、`python-build-standalone/` 与 `wheels/` 均已在 `win64/.gitignore` 中忽略，不会随仓库提交；它们分别由 `install.ps1` 与 `build.ps1` 生成或下载。后续若新增其他平台（如 `linux-x86_64/`、`macos-arm64/`），请按同样的结构在 `packpy/` 下建立独立子目录。
@@ -61,4 +59,4 @@ packpy/
 
 **激活 Python 环境**
 
-`./packpy/win64/.venvs/main/Scripts/Activate` 则激活当前的 Python 环境
+`./packpy/win64/.venvs/dev/Scripts/Activate` 则激活当前的 Python 环境

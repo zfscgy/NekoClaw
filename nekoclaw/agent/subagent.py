@@ -378,9 +378,9 @@ class SubagentManager:
     def _format_task_report(report: dict[str, Any]) -> str:
         """Format a ReportTask payload for the main agent."""
         return \
-            f"Success: {report['success']}"\
-            f"Output:\n{report['output']}\n\n"\
-            f"Actions:\n{report['actions']}\n\n"\
+            f"Success: {report['success']}\n\n ---- \n"\
+            f"Output:\n{report['output']}\n\n ---- \n"\
+            f"Actions:\n{report['actions']}\n\n ---- \n"\
             f"Products:\n{report['products']}"
 
     def _build_subagent_prompt(self) -> str:

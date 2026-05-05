@@ -1,3 +1,4 @@
+# AutoCython No Compile
 """Async message queue for decoupled channel-agent communication."""
 
 import asyncio

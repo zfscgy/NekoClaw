@@ -541,7 +541,8 @@ class TelegramChannel(BaseChannel):
         """Wait briefly, then forward buffered media-group as one turn."""
         try:
             await asyncio.sleep(0.6)
-            if not (buf := self._media_group_buffers.pop(key, None)):
+            buf = self._media_group_buffers.pop(key, None)
+            if not buf:
                 return
             content = "\n".join(buf["contents"]) or "[empty message]"
             await self._handle_message(

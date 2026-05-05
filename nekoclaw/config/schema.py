@@ -1,3 +1,4 @@
+# AutoCython No Compile
 """Configuration schema using Pydantic."""
 
 from pathlib import Path

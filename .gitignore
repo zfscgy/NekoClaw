@@ -1,9 +1,6 @@
-.worktrees/
-.assets
-.env
 *.pyc
-dist/
-build/
+/.venv
+__pycache__/
 *.egg-info/
 *.egg
 *.pyc
@@ -13,9 +10,6 @@ build/
 *.pyz
 *.pywz
 *.pyzz
-.venv/
-venv/
-__pycache__/
 poetry.lock
 .pytest_cache/
 botpy.log
