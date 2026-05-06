@@ -41,6 +41,13 @@ CYTHON_SKIP_FILES = {
     Path("nekoclaw/config/schema.py"),
     Path("nekoclaw/cron/types.py"),
 }
+# Subtrees inside packages that ship as data, not as Python modules. They
+# are excluded from the AutoCython staging tree (so AutoCython does not try
+# to compile any helper scripts they contain) and bundled directly from the
+# source tree via PyInstaller's --add-data.
+PACKAGE_RESOURCE_DIRS: dict[str, tuple[str, ...]] = {
+    "nekoclaw": ("skills",),
+}
 # Third-party packages whose submodules must be bundled. PyInstaller cannot
 # introspect AutoCython-compiled .pyd files for import statements, so every
 # dependency that the runtime imports through `from pkg.sub import ...` has to
@@ -227,6 +234,10 @@ def stage_sources(*, clean: bool) -> list[Path]:
         if dst.exists():
             shutil.rmtree(dst)
         shutil.copytree(src, dst, ignore=_ignore_runtime_noise)
+        for resource_subdir in PACKAGE_RESOURCE_DIRS.get(package, ()):
+            staged_resource = dst / resource_subdir
+            if staged_resource.exists():
+                shutil.rmtree(staged_resource)
         _mark_package_files_to_keep(dst)
         staged.append(dst)
 
@@ -316,7 +327,7 @@ def build_exe(*, clean: bool, windowed: bool, resources: Path) -> None:
         "--add-data",
         _pyinstaller_data(CYTHON_STAGE / "nekoclaw" / "templates", "nekoclaw/templates"),
         "--add-data",
-        _pyinstaller_data(CYTHON_STAGE / "nekoclaw" / "skills", "nekoclaw/skills"),
+        _pyinstaller_data(ROOT / "nekoclaw" / "skills", "nekoclaw/skills"),
         "--add-data",
         _pyinstaller_data(FRONTEND_DIST, "nekochat/nekochat_frontend/dist"),
         "--add-data",
