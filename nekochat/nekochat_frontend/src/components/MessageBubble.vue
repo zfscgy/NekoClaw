@@ -17,9 +17,13 @@
           </a>
         </template>
       </div>
-      <div v-if="formattedTime || streamStatus" class="msg-footer">
+      <div v-if="formattedTime || (streamStatus && role !== 'user')" class="msg-footer">
         <span v-if="formattedTime" class="msg-time">{{ formattedTime }}</span>
-        <span v-if="streamStatus" class="stream-status-icon bubble-status" :class="streamStatus">
+        <span
+          v-if="streamStatus && role !== 'user'"
+          class="stream-status-icon bubble-status"
+          :class="streamStatus"
+        >
           <template v-if="streamStatus === 'complete'">
             <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg">
               <polyline points="1.5,5 3.8,7.5 8.5,2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
@@ -28,6 +32,17 @@
         </span>
       </div>
     </div>
+    <span
+      v-if="role === 'user' && streamStatus"
+      class="stream-status-icon row-status"
+      :class="streamStatus"
+    >
+      <template v-if="streamStatus === 'complete'">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <polyline points="1.5,5 3.8,7.5 8.5,2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </template>
+    </span>
   </div>
 </template>
 

@@ -41,7 +41,11 @@ CYTHON_SKIP_FILES = {
     Path("nekoclaw/config/schema.py"),
     Path("nekoclaw/cron/types.py"),
 }
-HIDDEN_IMPORTS = (
+# Third-party packages whose submodules must be bundled. PyInstaller cannot
+# introspect AutoCython-compiled .pyd files for import statements, so every
+# dependency that the runtime imports through `from pkg.sub import ...` has to
+# be enumerated here and collected as a whole package tree.
+COLLECT_SUBMODULES = (
     "aiohttp",
     "botpy",
     "chardet",
@@ -56,7 +60,6 @@ HIDDEN_IMPORTS = (
     "msgpack",
     "oauth_cli_kit",
     "openai",
-    "playwright",
     "prompt_toolkit",
     "pydantic",
     "pydantic_settings",
@@ -69,6 +72,15 @@ HIDDEN_IMPORTS = (
     "typer",
     "websocket",
     "websockets",
+)
+
+# Packages that additionally ship binaries, data files, or distribution metadata
+# that must be copied alongside the Python sources. `--collect-all` is a
+# superset of `--collect-submodules` so these must NOT also appear above.
+COLLECT_ALL = (
+    # Playwright bundles a Node.js driver under playwright/driver/ that is
+    # required even when connecting to an external Chromium over CDP.
+    "playwright",
 )
 
 
@@ -310,8 +322,10 @@ def build_exe(*, clean: bool, windowed: bool, resources: Path) -> None:
         "--add-data",
         _pyinstaller_data(resources, "resources"),
     ]
-    for module in HIDDEN_IMPORTS:
-        cmd.extend(["--hidden-import", module])
+    for module in COLLECT_SUBMODULES:
+        cmd.extend(["--collect-submodules", module])
+    for module in COLLECT_ALL:
+        cmd.extend(["--collect-all", module])
     if windowed:
         cmd.append("--windowed")
     else:

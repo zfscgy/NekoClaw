@@ -968,6 +968,11 @@ html.light .msg-bubble pre code {
   box-shadow: none;
 }
 
+.stream-status-icon.row-status {
+  align-self: center;
+  box-shadow: none;
+}
+
 .msg-footer {
   display: flex;
   align-items: center;

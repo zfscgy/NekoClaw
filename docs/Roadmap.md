@@ -15,11 +15,15 @@
 ## Tools
 ### EXEC
 - [x] Python environment packing
+- [x] Fix powershell encoding issues (terminal/python) 
 
 ### Computer-use
-- [x] Basic computer-use tools like [Claude - Computer Use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool)
+- [ ] Basic computer-use tools like [Claude - Computer Use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool)
 
 ### Web
 - [x] Chrome portable support
-- [ ] Handling the case when browser is closed by user
+- [x] Handling the case when browser is closed by user
 - [ ] WebSearch engine selection config
+
+## Installation
+- [x] Windows installation by AutoCython + Pyinstaller

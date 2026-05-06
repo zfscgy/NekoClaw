@@ -6,8 +6,11 @@ import re
 import shutil
 from pathlib import Path
 
-# Default builtin skills directory (relative to this file)
-BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills"
+# Default builtin skills directory (relative to this file).
+# Skills shipped with the package live under ``nekoclaw/skills/`` split into
+# ``internal/`` (always loaded as built-ins) and ``optional/`` (copied into
+# the workspace on first launch by ``nekoclaw.startup.sync_optional_skills``).
+BUILTIN_SKILLS_DIR = Path(__file__).parent.parent / "skills" / "internal"
 
 
 class SkillsLoader:
