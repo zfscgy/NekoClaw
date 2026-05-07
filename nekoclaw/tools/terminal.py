@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
-from nekoclaw.config.loader import load_config
+from nekoclaw.config.manager import get_global_config
 from nekoclaw.security.exec_checker import check
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -39,7 +39,7 @@ class PersistentShell:
     """Long-lived shell session with guards and profile bootstrap."""
 
     def __init__(self, cwd: str | None = None) -> None:
-        cfg = load_config()
+        cfg = get_global_config()
         exec_cfg = cfg.tools.exec
         self.timeout = float(exec_cfg.timeout)
         self.restrict_to_workspace = cfg.tools.restrict_to_workspace

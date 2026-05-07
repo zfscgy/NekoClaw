@@ -5,15 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from nekoclaw.config.loader import load_config
-from nekoclaw.manager.runtime import get_agent
-from nekoclaw.manager.runtime import get_config as _get_runtime_config
+from nekoclaw.config.manager import get_agent, get_global_config
 from nekoclaw.session.manager import SessionManager
 
 
 def _workspace() -> Path:
-    cfg = _get_runtime_config() or load_config()
-    return cfg.workspace_path
+    return get_global_config().workspace_path
 
 
 def _session_manager() -> SessionManager:

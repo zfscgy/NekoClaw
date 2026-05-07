@@ -19,6 +19,7 @@
             <span class="ws-dot" :class="activeId ? wsStatus : 'disconnected'"></span>
             <div class="conv-subtitle">{{ activeId ? wsStatusLabel : 'No conversation selected' }}</div>
             <div style="flex:1"></div>
+            <ModelSelector ref="modelSelectorRef" />
             <button
               class="btn-header-icon"
               title="Skills"
@@ -124,7 +125,7 @@
     </div>
 
     <Lightbox :src="lightboxSrc" @close="lightboxSrc = null" />
-    <ConfigPanel v-if="showConfig" @close="showConfig = false" />
+    <ConfigPanel v-if="showConfig" @close="onConfigClose" />
     <SkillsPanel v-if="showSkills" @close="showSkills = false" />
   </div>
 </template>
@@ -141,6 +142,7 @@ import Lightbox from './components/Lightbox.vue'
 import SubagentCard from './components/SubagentCard.vue'
 import ConfigPanel from './components/ConfigPanel.vue'
 import SkillsPanel from './components/SkillsPanel.vue'
+import ModelSelector from './components/ModelSelector.vue'
 import { useTheme } from './composables/useTheme'
 import { useChat } from './composables/useChat'
 
@@ -157,6 +159,12 @@ const userSubagentCollapsed = ref(false)
 
 const showConfig = ref(false)
 const showSkills = ref(false)
+const modelSelectorRef = ref<InstanceType<typeof ModelSelector> | null>(null)
+
+function onConfigClose() {
+  showConfig.value = false
+  modelSelectorRef.value?.refresh()
+}
 
 function toggleSidebar() {
   userCollapsed.value = !userCollapsed.value

@@ -21,7 +21,7 @@ async def test_persistent_shell_uses_powershell_on_windows_and_executes():
     if shutil.which("powershell") is None:
         pytest.skip("powershell is not available on this machine")
 
-    with patch.object(terminal, "load_config", return_value=_shell_test_config()):
+    with patch.object(terminal, "get_global_config", return_value=_shell_test_config()):
         shell = terminal.PersistentShell()
         args = shell._shell_args()
         result = await shell.execute('Write-Output "hello"')
@@ -37,7 +37,7 @@ async def test_persistent_shell_uses_bash_on_non_windows_and_executes():
     if shutil.which("bash") is None:
         pytest.skip("bash is not available on this machine")
 
-    with patch.object(terminal, "load_config", return_value=_shell_test_config()):
+    with patch.object(terminal, "get_global_config", return_value=_shell_test_config()):
         shell = terminal.PersistentShell()
         args = shell._shell_args()
         result = await shell.execute("echo hello")

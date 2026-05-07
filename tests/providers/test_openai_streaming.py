@@ -2,7 +2,7 @@
 
 import asyncio
 
-from nekoclaw.config.loader import load_config
+from nekoclaw.config.manager import get_global_config
 from nekoclaw.providers.openai_provider import OpenAIProvider
 
 
@@ -82,7 +82,7 @@ MESSAGES = [
 
 
 async def test_openai_streaming() -> None:
-    config = load_config()
+    config = get_global_config()
     provider_cfg = config.providers.openai
 
     print(f"api_key : {provider_cfg.api_key[:8]}..." if provider_cfg.api_key else "api_key : (not set)")

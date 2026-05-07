@@ -103,7 +103,7 @@ def gateway(
     bus = MessageBus()
     provider = _make_provider(cfg)
 
-    from nekoclaw.manager.runtime import set_runtime
+    from nekoclaw.config.manager import set_runtime
     set_runtime(cfg, provider)
 
     cron_store_path = get_cron_dir() / "jobs.json"

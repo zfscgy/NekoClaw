@@ -245,11 +245,11 @@ def _run_web_fetch(session: t.Any, url: str, wait: int) -> t.Any:
     return session.fetch(url, wait=wait)
 
 
-def _strip_scripts_and_styles(html_text: str) -> str:
+def _strip_noise_nodes(html_text: str) -> str:
     from lxml import html
 
     root = html.fromstring(html_text)
-    for node in root.xpath("//script|//style"):
+    for node in root.xpath("//script|//style|//img"):
         parent = node.getparent()
         if parent is not None:
             parent.remove(node)
@@ -376,7 +376,7 @@ def web_fetch(
     _ensure_chromium_alive()
     response = _get_pool().submit(_run_web_fetch, url, wait).result()
     html_text = decode_html_body(response.body)
-    cleaned_html = _strip_scripts_and_styles(html_text)
+    cleaned_html = _strip_noise_nodes(html_text)
     if mode == "markdown":
         return to_markdown(cleaned_html)
     return cleaned_html

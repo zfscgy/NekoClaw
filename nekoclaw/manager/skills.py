@@ -21,7 +21,7 @@ from typing import Literal
 from loguru import logger
 
 from nekoclaw.agent.skills import BUILTIN_SKILLS_DIR, SkillsLoader
-from nekoclaw.manager.runtime import get_config
+from nekoclaw.config.manager import get_global_config
 
 
 SkillStatus = Literal["enabled", "disabled"]
@@ -31,12 +31,8 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _resolve_workspace() -> Path:
-    """Return the active workspace path (falls back to the default)."""
-    cfg = get_config()
-    if cfg is not None:
-        return cfg.workspace_path
-    from nekoclaw.config.paths import get_workspace_path
-    return get_workspace_path()
+    """Return the active workspace path."""
+    return get_global_config().workspace_path
 
 
 def _skills_dir() -> Path:

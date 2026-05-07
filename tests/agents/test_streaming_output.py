@@ -8,10 +8,10 @@ import pytest
 
 def _load_real_provider():
     """Load OpenAIProvider from the user's nekoclaw config (~/.nekoclaw/config.json)."""
-    from nekoclaw.config.loader import load_config
+    from nekoclaw.config.manager import get_global_config
     from nekoclaw.providers.openai_provider import OpenAIProvider
 
-    cfg = load_config()
+    cfg = get_global_config()
     model = cfg.agents.defaults.model
     provider_cfg = cfg.get_provider(model)
 

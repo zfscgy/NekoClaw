@@ -54,7 +54,7 @@ def load_runtime_config(
         prompt_configs,
         set_config_path,
     )
-    from nekoclaw.manager import config
+    from nekoclaw.config.manager import get_global_config, set_global_config
 
     config_path: Path | None = None
     if config_path_str:
@@ -70,7 +70,7 @@ def load_runtime_config(
                 f"  [dim]喵咪已经在 {created[0].parent} 帮主人摆好默认配置啦～[/dim]"
             )
 
-    loaded = config.get_global_config()
+    loaded = get_global_config()
     missing = missing_gateway_config_keys(loaded)
     if missing:
         console.print(
@@ -78,6 +78,7 @@ def load_runtime_config(
             f"{', '.join(missing)}，主人现在就来补上吧～[/yellow]"
         )
         loaded = prompt_configs(config_path)
+        set_global_config(loaded)
         missing = missing_gateway_config_keys(loaded)
         if missing:
             console.print(

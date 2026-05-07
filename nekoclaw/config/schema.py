@@ -4,7 +4,7 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings
 
@@ -76,12 +76,54 @@ class AgentsConfig(Base):
     defaults: AgentDefaults = Field(default_factory=AgentDefaults)
 
 
+# Curated short-list of recommended model ids per upstream base URL.
+# Extend this map to teach ``ProviderConfig.infer_models`` about new providers.
+_RECOMMENDED_MODELS_BY_HOST: dict[str, list[str]] = {
+    "openrouter.ai": [
+        "openai/gpt-5.5",
+        "anthropic/claude-sonnet-4.6",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3-flash-preview",
+        "z-ai/glm-5.1",
+        "moonshotai/kimi-k2.6",
+    ],
+}
+
+
 class ProviderConfig(Base):
     """LLM provider configuration."""
 
     api_key: str = ""
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
+    # Curated list of model ids surfaced by the UI as quick-pick suggestions.
+    # Always auto-derived from ``api_base`` via :meth:`infer_models` — see the
+    # ``_apply_infer_models`` validator below — so any value supplied in JSON
+    # or via the manager API is overwritten on validation.
+    recommended_models: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _apply_infer_models(self) -> "ProviderConfig":
+        """Re-derive ``recommended_models`` from ``api_base`` on every load."""
+        self.recommended_models = self.infer_models(self.api_base)
+        return self
+
+    @staticmethod
+    def infer_models(api_base: str | None) -> list[str]:
+        """Return the recommended model id list for the given base URL.
+
+        The match is a case-insensitive substring check against
+        :data:`_RECOMMENDED_MODELS_BY_HOST` so subpath/regional URLs still
+        resolve to the right preset (e.g. ``https://openrouter.ai/api/v1``).
+        Returns an empty list when no preset is known for the URL.
+        """
+        if not api_base:
+            return []
+        haystack = api_base.lower()
+        for host, models in _RECOMMENDED_MODELS_BY_HOST.items():
+            if host in haystack:
+                return list(models)
+        return []
 
 
 class ProvidersConfig(Base):
@@ -105,10 +147,20 @@ class GatewayConfig(Base):
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 
+class WebSearchEnginesConfig(Base):
+    """Toggles for individual web search engines."""
+
+    baidu: bool = True
+    google: bool = True
+    bing: bool = True
+    duckduckgo: bool = True
+
+
 class WebSearchConfig(Base):
     """Web search tool configuration."""
 
     max_results: int = 10
+    engines: WebSearchEnginesConfig = Field(default_factory=WebSearchEnginesConfig)
 
 
 class WebToolsConfig(Base):
@@ -169,31 +221,5 @@ class Config(BaseSettings):
         """Get expanded workspace path."""
         return Path(self.agents.defaults.workspace).expanduser()
 
-    def _match_provider(
-        self, model: str | None = None
-    ) -> tuple["ProviderConfig | None", str | None]:
-        """Return the OpenAI provider config and its name."""
-        p = self.providers.openai
-        return (p, "openai") if p.api_key else (None, None)
-
-    def get_provider(self, model: str | None = None) -> ProviderConfig | None:
-        """Get matched provider config (api_key, api_base, extra_headers). Falls back to first available."""
-        p, _ = self._match_provider(model)
-        return p
-
-    def get_provider_name(self, model: str | None = None) -> str | None:
-        """Get the registry name of the matched provider (e.g. "deepseek", "openrouter")."""
-        _, name = self._match_provider(model)
-        return name
-
-    def get_api_key(self, model: str | None = None) -> str | None:
-        """Get API key for the given model. Falls back to first available key."""
-        p = self.get_provider(model)
-        return p.api_key if p else None
-
-    def get_api_base(self, model: str | None = None) -> str | None:
-        """Get API base URL for the OpenAI provider."""
-        p = self.providers.openai
-        return p.api_base if p else None
 
     model_config = ConfigDict(env_prefix="NANOBOT_", env_nested_delimiter="__")

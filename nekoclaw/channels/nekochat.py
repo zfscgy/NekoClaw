@@ -953,7 +953,7 @@ class NekoChatChannel(BaseChannel):
         self._cur_round.pop(cid, None)
         self._subagent_state.pop(cid, None)
 
-        from nekoclaw.manager.sessions import delete_session
+        from nekoclaw.manager import delete_session
         result = delete_session(f"{self.name}:{cid}")
         return aiohttp_web.json_response({"ok": True, **result})
 
@@ -1187,8 +1187,8 @@ class NekoChatChannel(BaseChannel):
 
         ``?key=providers.openai.api_key`` returns only that value.
         """
-        from nekoclaw.manager.config import to_dict as cfg_get
-        from nekoclaw.manager.config import schema as cfg_schema
+        from nekoclaw.config.manager import to_dict as cfg_get
+        from nekoclaw.config.manager import schema as cfg_schema
 
         key = request.rel_url.query.get("key")
         try:
@@ -1206,8 +1206,8 @@ class NekoChatChannel(BaseChannel):
 
     async def _handle_set_config(self, request: Any) -> Any:
         """Apply a ``{key, value}`` mutation and return the refreshed config."""
-        from nekoclaw.manager.config import to_dict as cfg_get
-        from nekoclaw.manager.config import set_key as cfg_set
+        from nekoclaw.config.manager import to_dict as cfg_get
+        from nekoclaw.config.manager import set_key as cfg_set
 
         try:
             body = await request.json()
@@ -1234,14 +1234,14 @@ class NekoChatChannel(BaseChannel):
         return aiohttp_web.json_response({"key": key, "config": cfg_get()})
 
     async def _handle_list_skills(self, request: Any) -> Any:
-        from nekoclaw.manager.skill import list_skills
+        from nekoclaw.manager import list_skills
         try:
             return aiohttp_web.json_response({"skills": list_skills()})
         except Exception as exc:
             return aiohttp_web.json_response({"error": str(exc)}, status=500)
 
     async def _handle_enable_skill(self, request: Any) -> Any:
-        from nekoclaw.manager.skill import enable_skill
+        from nekoclaw.manager import enable_skill
         name = request.match_info["name"]
         try:
             info = enable_skill(name)
@@ -1255,7 +1255,7 @@ class NekoChatChannel(BaseChannel):
         return aiohttp_web.json_response({"skill": info})
 
     async def _handle_disable_skill(self, request: Any) -> Any:
-        from nekoclaw.manager.skill import disable_skill
+        from nekoclaw.manager import disable_skill
         name = request.match_info["name"]
         try:
             info = disable_skill(name)
@@ -1271,7 +1271,7 @@ class NekoChatChannel(BaseChannel):
     async def _handle_upload_skill(self, request: Any) -> Any:
         """Accept a zipped skill upload and install it to the workspace skills dir."""
         import tempfile
-        from nekoclaw.manager.skill import add_skill_from_zip
+        from nekoclaw.manager import add_skill_from_zip
 
         try:
             reader = await request.multipart()

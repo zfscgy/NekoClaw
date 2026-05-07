@@ -1,13 +1,15 @@
 """Runtime configuration management.
 
-Exposes generic :func:`get` / :func:`set` helpers that read and mutate the
-active :class:`~nekoclaw.config.schema.Config` via dot-path keys
-(e.g. ``providers.openai.api_key``), persist changes to disk *and* apply them
-to the live runtime where possible so no restart is required.
+Maintains the active :class:`~nekoclaw.config.schema.Config` as a process-wide
+global, plus references to live runtime services (LLM provider, agent loop,
+heartbeat) so the NekoChat config panel can mutate any field, persist it to
+disk, and apply the change to running components without a restart.
 
-The frontend config panel is driven entirely by the Pydantic schema: calling
-:func:`get` returns the full config dict plus the resolved JSON schema, so
-any new field added to :mod:`nekoclaw.config.schema` appears automatically.
+Exposes a generic :func:`to_dict` / :func:`set_key` API that walks the active
+config via dot-path keys (e.g. ``providers.openai.api_key``) and a
+:func:`schema` helper that returns the resolved Pydantic JSON schema, so any
+new field added to :mod:`nekoclaw.config.schema` appears automatically in the
+frontend.
 """
 
 from __future__ import annotations
@@ -18,19 +20,69 @@ from loguru import logger
 
 from nekoclaw.config.loader import load_config, save_config
 from nekoclaw.config.schema import Config
-from nekoclaw.manager.runtime import get_agent, get_heartbeat
-from nekoclaw.manager.runtime import get_config as _get_runtime_config
-from nekoclaw.manager.runtime import get_provider, set_runtime
+from nekoclaw.providers.base import LLMProvider
+
+
+# ---------------------------------------------------------------------------
+# Global runtime state
+# ---------------------------------------------------------------------------
+
+_current_config: Config | None = None
+_current_provider: LLMProvider | None = None
+_current_agent: Any | None = None
+_current_heartbeat: Any | None = None
+_UNSET = object()
+
+
+def get_global_config() -> Config:
+    """Return the active runtime config, loading it from disk on first access."""
+    global _current_config
+    if _current_config is None:
+        _current_config = load_config()
+    return _current_config
+
+
+def set_global_config(config: Config) -> None:
+    """Register the active runtime config without touching live service refs."""
+    global _current_config
+    _current_config = config
+
+
+def set_runtime(
+    config: Config,
+    provider: LLMProvider | None,
+    *,
+    agent: Any = _UNSET,
+    heartbeat: Any = _UNSET,
+) -> None:
+    """Register the active runtime config and live service references."""
+    global _current_config, _current_provider, _current_agent, _current_heartbeat
+    _current_config = config
+    _current_provider = provider
+    if agent is not _UNSET:
+        _current_agent = agent
+    if heartbeat is not _UNSET:
+        _current_heartbeat = heartbeat
+
+
+def get_provider() -> LLMProvider | None:
+    """Return the active LLM provider, if registered."""
+    return _current_provider
+
+
+def get_agent() -> Any | None:
+    """Return the active agent loop, if registered."""
+    return _current_agent
+
+
+def get_heartbeat() -> Any | None:
+    """Return the active heartbeat service, if registered."""
+    return _current_heartbeat
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def get_global_config() -> Config:
-    """Return the live runtime config, falling back to disk."""
-    return _get_runtime_config() or load_config()
 
 
 def _camel_to_snake(name: str) -> str:
@@ -146,8 +198,7 @@ def set_key(key: str, value: Any) -> Any:  # noqa: A001 - module-level API name
     save_config(new_cfg)
     logger.info("Config updated: {} = {!r}", key, _redact(key, value))
 
-    set_runtime(new_cfg, get_provider())
-
+    set_global_config(new_cfg)
     _apply_runtime_live(new_cfg)
 
     return value
@@ -236,33 +287,3 @@ def _apply_heartbeat_live(new_cfg: Config) -> None:
         logger.info("Live heartbeat settings reconfigured")
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to reconfigure live heartbeat settings: {}", exc)
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible OpenAI shortcuts (thin wrappers over get/set)
-# ---------------------------------------------------------------------------
-
-
-def get_openai_provider_config() -> dict:
-    """Return the current OpenAI provider config as a plain dict."""
-    data = to_dict("providers.openai")
-    return {
-        "api_key": data.get("api_key") or "",
-        "api_base": data.get("api_base") or "",
-        "extra_headers": data.get("extra_headers") or {},
-    }
-
-
-def set_openai_provider_config(
-    api_key: str | None = None,
-    api_base: str | None = None,
-    extra_headers: dict[str, str] | None = None,
-) -> dict:
-    """Update the OpenAI provider config.  Only non-``None`` args are applied."""
-    if api_key is not None:
-        set_key("providers.openai.api_key", api_key)
-    if api_base is not None:
-        set_key("providers.openai.api_base", api_base or None)
-    if extra_headers is not None:
-        set_key("providers.openai.extra_headers", extra_headers or None)
-    return get_openai_provider_config()

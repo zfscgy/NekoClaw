@@ -1,28 +1,35 @@
 """Runtime management helpers exposed to channel APIs.
 
-This package provides user-facing management operations (editing provider
-configuration, installing/enabling/disabling skills, etc.) that need to be
-callable at runtime from the NekoChat web UI.
+This package provides user-facing management operations (installing/enabling
+/disabling skills, deleting persisted sessions, etc.) that need to be callable
+at runtime from the NekoChat web UI.
 
-Typical usage::
+Channels and other consumers should import the public helpers exposed here
+rather than reaching into the submodules directly.
 
-    from nekoclaw.manager import config as mcfg
-
-    mcfg.set("providers.openai.api_key", "sk-…")
-    current = mcfg.get("providers.openai")
+Configuration management lives in :mod:`nekoclaw.config.manager`.
 """
 
-from nekoclaw.manager import config, sessions
-from nekoclaw.manager.runtime import (
-    get_config,
-    get_provider,
-    set_runtime,
+from nekoclaw.manager.sessions import delete_session
+from nekoclaw.manager.skills import (
+    SkillSource,
+    SkillStatus,
+    add_skill_from_directory,
+    add_skill_from_zip,
+    disable_skill,
+    enable_skill,
+    get_loader,
+    list_skills,
 )
 
 __all__ = [
-    "config",
-    "sessions",
-    "get_config",
-    "get_provider",
-    "set_runtime",
+    "SkillSource",
+    "SkillStatus",
+    "add_skill_from_directory",
+    "add_skill_from_zip",
+    "delete_session",
+    "disable_skill",
+    "enable_skill",
+    "get_loader",
+    "list_skills",
 ]

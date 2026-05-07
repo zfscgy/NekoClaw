@@ -217,5 +217,5 @@ def ensure_exec_tool_python_venv() -> None:
     os.environ["VIRTUAL_ENV"] = str(dev_venv)
     os.environ.pop("PYTHONHOME", None)
 
-    console.print(f"  [green]✓[/green] exec 工具 Python 已就绪喵: {dev_python}")
+    console.print(f"  [green]✓[/green] exec 工具 Python 已就绪喵: {dev_python} (已设置环境变量并继承至 EXEC Tool)")
     console.rule("[dim]· venv 检查完毕喵 ·[/dim]")
