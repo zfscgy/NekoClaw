@@ -147,11 +147,11 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     Interactively prompt the user for the essential configuration keys and
     persist the result to disk.
 
-    Keys collected:
+    Keys collected (in this order):
     - OpenAI API base URL (``providers.openai.api_base``)
-    - OpenAI API key     (``providers.openai.api_key``)
-    - Default model      (``agents.defaults.model``)
-    - Template locale    (``agents.defaults.template_locale`` — ``en`` or ``cn``)
+    - OpenAI API key      (``providers.openai.api_key``)
+    - Default model       (``agents.defaults.model``)
+    - Template locale     (``agents.defaults.template_locale`` — ``en`` or ``cn``)
 
     Current values (if any) are shown as defaults; press Enter to keep them.
 
@@ -171,11 +171,18 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     create_default_configs(path)
     cfg = load_config(path)
 
-    console.print("[bold cyan]NekoClaw configuration[/bold cyan]")
-    console.print("[dim]Press Enter to keep the current value.[/dim]\n")
+    console.rule("[bold magenta]· NekoClaw 配置时间喵～主人填一下吧 ·[/bold magenta]")
+    console.print("[dim]按 Enter 即可保留当前的值喵～[/dim]\n")
 
-    console.print("[bold]OpenAI provider[/bold]")
+    console.print("[bold]OpenAI 服务设置喵[/bold]")
     openai = cfg.providers.openai
+
+    new_base = Prompt.ask(
+        "  openai_base_url",
+        default=openai.api_base or "",
+        show_default=bool(openai.api_base),
+    ).strip()
+    openai.api_base = new_base or None
 
     current_key = openai.api_key
     new_key = Prompt.ask(
@@ -186,13 +193,6 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     if new_key and new_key != current_key:
         openai.api_key = new_key.strip()
 
-    new_base = Prompt.ask(
-        "  openai_base_url",
-        default=openai.api_base or "",
-        show_default=bool(openai.api_base),
-    ).strip()
-    openai.api_base = new_base or None
-
     new_model = Prompt.ask(
         "  model",
         default=cfg.agents.defaults.model,
@@ -200,7 +200,7 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     if new_model:
         cfg.agents.defaults.model = new_model
 
-    console.print("\n[bold]Locale[/bold]")
+    console.print("\n[bold]界面语言喵[/bold]")
     new_locale = Prompt.ask(
         "  locale",
         choices=["en", "cn"],
@@ -209,7 +209,8 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     cfg.agents.defaults.template_locale = new_locale  # type: ignore[assignment]
 
     save_config(cfg, path)
-    console.print(f"\n[green]✓[/green] Saved configuration to [cyan]{path}[/cyan]")
+    console.print(f"\n[green]✓[/green] 配置已保存到 [cyan]{path}[/cyan] 喵～")
+    console.rule("[dim]· 配置收好啦，喵咪继续启动 ·[/dim]")
 
     return cfg
 

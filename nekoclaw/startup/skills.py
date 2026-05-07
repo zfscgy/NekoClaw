@@ -62,7 +62,7 @@ def sync_optional_skills(workspace: Path, *, silent: bool = False) -> list[str]:
             _copy_traversable(entry, dest)
         except Exception as exc:
             console.print(
-                f"[yellow]Warning: failed to install optional skill {name}: {exc}[/yellow]"
+                f"[yellow]可选 skill {name} 安装失败了喵: {exc}[/yellow]"
             )
             continue
 
@@ -70,7 +70,7 @@ def sync_optional_skills(workspace: Path, *, silent: bool = False) -> list[str]:
 
     if added and not silent:
         for name in added:
-            console.print(f"  [dim]Installed optional skill {name}[/dim]")
+            console.print(f"  [dim]新装好可选 skill {name} 喵～[/dim]")
 
     return added
 

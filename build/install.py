@@ -188,6 +188,8 @@ def _ignore_resource_noise(_: str, names: list[str]) -> set[str]:
         ".pytest_cache",
         ".mypy_cache",
         ".ruff_cache",
+        ".venv",
+        ".venvs",
     }
     ignored_suffixes = (".pyc", ".pyo")
     return {name for name in names if name in ignored_dirs or name.endswith(ignored_suffixes)}

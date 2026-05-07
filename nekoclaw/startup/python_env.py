@@ -47,10 +47,10 @@ def _run_checked(command: list[str], *, cwd: Path | None = None, error: str) -> 
     try:
         subprocess.run(command, cwd=cwd, check=True)
     except FileNotFoundError as exc:
-        console.print(f"[red]Error: {error}: {exc}[/red]")
+        console.print(f"[red]出错喵: {error}: {exc}[/red]")
         sys.exit(1)
     except subprocess.CalledProcessError as exc:
-        console.print(f"[red]Error: {error} (exit {exc.returncode})[/red]")
+        console.print(f"[red]出错喵: {error} (退出码 {exc.returncode})[/red]")
         sys.exit(exc.returncode or 1)
 
 
@@ -93,7 +93,7 @@ def _missing_venv_packages(python: Path, requirements: Path) -> list[str]:
             text=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        console.print(f"[red]Error: could not check exec-tool dependencies: {exc}[/red]")
+        console.print(f"[red]检查 exec 工具依赖失败了喵: {exc}[/red]")
         sys.exit(1)
 
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
@@ -106,7 +106,7 @@ def _install_exec_tool_dependencies(
     wheels_dir: Path,
 ) -> None:
     """Install exec-tool dependencies from the bundled offline wheel cache."""
-    console.print("  [dim]->[/dim] Installing exec-tool dependencies from offline wheels")
+    console.print("  [dim]→[/dim] 正在从离线 wheels 安装 exec 工具的依赖喵～")
     _run_checked(
         [
             str(dev_python),
@@ -120,15 +120,19 @@ def _install_exec_tool_dependencies(
             str(requirements),
         ],
         cwd=packpy_dir,
-        error="failed to install exec-tool dependencies",
+        error="exec 工具依赖安装失败",
     )
 
 
 def ensure_exec_tool_python_venv() -> None:
     """Ensure the packaged Python venv exists and is first on PATH for exec."""
     if sys.platform != "win32":
-        console.print("[dim]Packaged win64 exec-tool venv is only required on Windows; skipping.[/dim]")
+        console.print(
+            "[dim]exec 工具的 win64 venv 只在 Windows 上需要，本喵自动跳过啦～[/dim]"
+        )
         return
+
+    console.rule("[dim]· 检查 exec 工具的 Python venv 喵 ·[/dim]")
 
     packpy_dir = _repo_root() / "resources" / "packpy" / "win64"
     dev_venv = packpy_dir / ".venvs" / "dev"
@@ -137,52 +141,52 @@ def ensure_exec_tool_python_venv() -> None:
     requirements = packpy_dir / "requirements.txt"
     wheels_dir = packpy_dir / "wheels"
 
-    console.print(f"  [dim]Target:[/dim] {dev_venv}")
+    console.print(f"  [dim]目标位置喵:[/dim] {dev_venv}")
     if not dev_python.exists():
         packaged_python = _find_packaged_python(packpy_dir)
 
         if packaged_python is None:
             console.print(
-                "[red]Error: python.exe not found under "
+                "[red]找不到打包好的 python.exe 喵: "
                 f"{packpy_dir / 'python-build-standalone'}[/red]"
             )
             sys.exit(1)
         if not requirements.exists():
-            console.print(f"[red]Error: requirements file not found: {requirements}[/red]")
+            console.print(f"[red]找不到 requirements 文件喵: {requirements}[/red]")
             sys.exit(1)
         if not wheels_dir.exists():
-            console.print(f"[red]Error: offline wheels directory not found: {wheels_dir}[/red]")
+            console.print(f"[red]找不到离线 wheels 目录喵: {wheels_dir}[/red]")
             sys.exit(1)
 
-        console.print(f"  [dim]->[/dim] Creating venv with {packaged_python}")
+        console.print(f"  [dim]→[/dim] 用 {packaged_python} 创建 venv 喵～")
         _run_checked(
             [str(packaged_python), "-m", "venv", str(dev_venv)],
-            error="failed to create exec-tool venv",
+            error="exec 工具 venv 创建失败",
         )
-        console.print("  [green]✓[/green] Exec-tool venv created")
+        console.print("  [green]✓[/green] exec 工具 venv 已经造好啦喵～")
 
         _install_exec_tool_dependencies(dev_python, packpy_dir, requirements, wheels_dir)
     else:
-        console.print("  [green]✓[/green] Exec-tool venv already exists")
+        console.print("  [green]✓[/green] exec 工具 venv 已经存在喵～")
         if not requirements.exists():
-            console.print(f"[red]Error: requirements file not found: {requirements}[/red]")
+            console.print(f"[red]找不到 requirements 文件喵: {requirements}[/red]")
             sys.exit(1)
         if not wheels_dir.exists():
-            console.print(f"[red]Error: offline wheels directory not found: {wheels_dir}[/red]")
+            console.print(f"[red]找不到离线 wheels 目录喵: {wheels_dir}[/red]")
             sys.exit(1)
 
-        console.print("  [dim]->[/dim] Checking exec-tool dependencies")
+        console.print("  [dim]→[/dim] 检查 exec 工具的依赖喵～")
         missing_packages = _missing_venv_packages(dev_python, requirements)
         if missing_packages:
             console.print(
-                "[yellow]Missing exec-tool packages: "
+                "[yellow]exec 工具还缺少这些包喵: "
                 f"{', '.join(missing_packages)}[/yellow]"
             )
             _install_exec_tool_dependencies(dev_python, packpy_dir, requirements, wheels_dir)
         else:
-            console.print("  [green]✓[/green] Exec-tool dependencies ready")
+            console.print("  [green]✓[/green] exec 工具依赖齐全喵～")
 
-    console.print("  [dim]->[/dim] Linking source tree into exec-tool venv")
+    console.print("  [dim]→[/dim] 把源码软链到 exec 工具 venv 中喵～")
     try:
         site_packages = subprocess.check_output(
             [
@@ -193,11 +197,13 @@ def ensure_exec_tool_python_venv() -> None:
             text=True,
         ).strip()
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        console.print(f"[red]Error: could not locate exec-tool site-packages: {exc}[/red]")
+        console.print(f"[red]找不到 exec 工具的 site-packages 喵: {exc}[/red]")
         sys.exit(1)
 
     if not site_packages:
-        console.print(f"[red]Error: could not locate exec-tool site-packages for {dev_python}[/red]")
+        console.print(
+            f"[red]无法定位 {dev_python} 对应的 site-packages 喵[/red]"
+        )
         sys.exit(1)
 
     pth_file = Path(site_packages) / "nekoclaw.pth"
@@ -211,4 +217,5 @@ def ensure_exec_tool_python_venv() -> None:
     os.environ["VIRTUAL_ENV"] = str(dev_venv)
     os.environ.pop("PYTHONHOME", None)
 
-    console.print(f"  [green]✓[/green] Exec-tool Python ready: {dev_python}")
+    console.print(f"  [green]✓[/green] exec 工具 Python 已就绪喵: {dev_python}")
+    console.rule("[dim]· venv 检查完毕喵 ·[/dim]")

@@ -12,8 +12,11 @@ from rich.console import Console
 from nekoclaw import __logo__
 from nekoclaw.config.schema import Config
 from nekoclaw.startup import (
+    configure_logging,
     ensure_exec_tool_python_venv,
     load_runtime_config,
+    nekochat_url,
+    open_nekochat_browser,
     sync_optional_skills,
 )
 from nekoclaw.utils.helpers import sync_workspace_templates
@@ -36,8 +39,8 @@ def _make_provider(config: Config):
 
     if not p.api_key:
         console.print(
-            "[yellow]Warning: No OpenAI API key configured — "
-            "set it from the NekoChat config panel or ~/.nekoclaw/providers.json.[/yellow]"
+            "[yellow]还没有配置 OpenAI API Key 喵～ "
+            "可以稍后从 NekoChat 配置面板或 ~/.nekoclaw/providers.json 里补上。[/yellow]"
         )
 
     return OpenAIProvider(
@@ -55,19 +58,35 @@ def gateway(
     config: str | None = None,
 ) -> None:
     """Start the nekoclaw gateway."""
-    if verbose:
-        import logging
-        logging.basicConfig(level=logging.DEBUG)
+    log_path = configure_logging(verbose=verbose)
 
-    console.print("[bold cyan][1/3] Checking config[/bold cyan]")
-    cfg = load_runtime_config(config, workspace)
-    console.print("[green]✓[/green] Config ready")
+    console.rule(
+        f"[bold magenta]{__logo__} 欢迎使用 NekoClaw，主人～现在就由 Neko 来帮你启动吧[/bold magenta]"
+    )
+    console.print(
+        f"  [dim]详细日志会被喵咪悄悄记到 [cyan]{log_path}[/cyan] 里啦～[/dim]"
+    )
 
-    console.print("[bold cyan][2/3] Checking Python venv for exec tool[/bold cyan]")
+    # Step 1 wraps everything that needs to happen before we can boot:
+    #   - ensure the bundled Python venv is ready (Windows exec tool)
+    #   - load (and, if needed, interactively prompt for) the runtime config
+    #   - sync optional skills into the workspace
+    # ``load_runtime_config`` may print prompts of its own; we run it inside
+    # this step so the workspace path is available for ``sync_optional_skills``.
+    console.print(
+        "[bold cyan][1/2] 准备运行环境喵～（Python venv + 配置 + 可选 skills）[/bold cyan]"
+    )
     ensure_exec_tool_python_venv()
+    cfg = load_runtime_config(config, workspace)
+    sync_optional_skills(cfg.workspace_path)
+    console.print("[green]✓[/green] 运行环境已经全部就绪喵～")
 
-    console.print("[bold cyan][3/3] Starting gateway[/bold cyan]")
-    console.print(f"{__logo__} Starting nekoclaw gateway on port {port}...")
+    console.rule("[dim]✦ 步骤 1 完成喵 ✦[/dim]")
+
+    console.print("[bold cyan][2/2] 启动猫娘 AI ～[/bold cyan]")
+    console.print(
+        f"{__logo__} 正在端口 [bold]{port}[/bold] 上唤醒 nekoclaw 喵～请稍等一下下"
+    )
     from nekoclaw.agent.loop import AgentLoop
     from nekoclaw.bus.queue import MessageBus
     from nekoclaw.channels.manager import ChannelManager
@@ -81,7 +100,6 @@ def gateway(
     sync_workspace_templates(
         cfg.workspace_path, template_locale=cfg.agents.defaults.template_locale
     )
-    sync_optional_skills(cfg.workspace_path)
     bus = MessageBus()
     provider = _make_provider(cfg)
 
@@ -199,26 +217,61 @@ def gateway(
     set_runtime(cfg, provider, agent=agent, heartbeat=heartbeat)
 
     if channels.enabled_channels:
-        console.print(f"[green]✓[/green] Channels enabled: {', '.join(channels.enabled_channels)}")
+        console.print(
+            f"[green]✓[/green] 已经叫醒了这些频道喵: "
+            f"{', '.join(channels.enabled_channels)}"
+        )
     else:
-        console.print("[yellow]Warning: No channels enabled[/yellow]")
+        console.print("[yellow]咦？还没有启用任何频道喵，主人快去配置一下吧～[/yellow]")
 
     cron_status = cron.status()
     if cron_status["jobs"] > 0:
-        console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
+        console.print(
+            f"[green]✓[/green] 定时任务: Neko 已经记住 {cron_status['jobs']} 项小日程啦～"
+        )
 
-    console.print(f"[green]✓[/green] Heartbeat: every {hb_cfg.interval_s}s")
+    console.print(
+        f"[green]✓[/green] 心跳: Neko 每 {hb_cfg.interval_s} 秒会偷偷看看主人喵～"
+    )
+
+    web_url = nekochat_url(cfg)
+
+    def _print_ready_banner() -> None:
+        console.rule(
+            "[bold magenta]( =ↀωↀ=) 猫娘 AI 启动完成，开始工作～[/bold magenta]"
+        )
+        if web_url:
+            console.print(
+                f"  [bold cyan]NekoChat 前端地址：[/bold cyan]"
+                f"[link={web_url}]{web_url}[/link]"
+            )
+        console.print(
+            "  [dim]按 [bold]Ctrl+C[/bold] 可以让 Neko 安静地睡觉喵 zzZ[/dim]"
+        )
+        console.rule("[dim]✦ 祝主人玩得开心喵～ ✦[/dim]")
 
     async def run() -> None:
         try:
             await cron.start()
             await heartbeat.start()
+
+            async def _post_start_tasks() -> None:
+                # Give the channels a moment to bind their sockets so the
+                # browser doesn't race ahead and hit a "connection refused".
+                await asyncio.sleep(1.2)
+                _print_ready_banner()
+                open_nekochat_browser(cfg)
+
+            asyncio.create_task(_post_start_tasks())
+
             await asyncio.gather(
                 agent.run(),
                 channels.start_all(),
             )
         except KeyboardInterrupt:
-            console.print("\nShutting down...")
+            console.rule(
+                "[bold magenta]收到关机指令，Neko 要去睡觉啦～(=ＴェＴ=)[/bold magenta]"
+            )
         finally:
             heartbeat.stop()
             cron.stop()
@@ -231,12 +284,12 @@ def gateway(
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="nekoclaw",
-        description=f"{__logo__} nekoclaw - Personal AI Assistant gateway",
+        description=f"{__logo__} nekoclaw - 个人猫娘 AI 助手网关喵～",
     )
-    parser.add_argument("--port", "-p", type=int, default=18790, help="Gateway port (default: 18790)")
-    parser.add_argument("--workspace", "-w", default=None, help="Workspace directory")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
-    parser.add_argument("--config", "-c", default=None, help="Path to config file")
+    parser.add_argument("--port", "-p", type=int, default=18790, help="网关端口（默认 18790）")
+    parser.add_argument("--workspace", "-w", default=None, help="工作区目录")
+    parser.add_argument("--verbose", "-v", action=None, help="输出详细日志")
+    parser.add_argument("--config", "-c", default=None, help="配置文件路径")
     args = parser.parse_args()
     gateway(port=args.port, workspace=args.workspace, verbose=args.verbose, config=args.config)
 
