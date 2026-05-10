@@ -178,29 +178,37 @@ class StreamDelta:
     # Only populated for type=="user"; empty for all other delta types.
     media: list[str] = field(default_factory=list)
     # UTC ISO 8601 timestamp recorded when the delta is persisted to the session.
-    # Only set on final "content" deltas (assistant responses), never on streaming chunks.
+    # Set on persisted delta types: final assistant "content" (not streaming
+    # chunks), "user", "tool_call_results", and "subagent_ref". May be ``None``
+    # for transient deltas (streaming chunks, "thinking", "system", "tool_call").
     time: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict for session storage."""
         if self.type == "tool_call" and isinstance(self.content, ToolCallRequest):
             tc = self.content
-            return {
+            d: dict[str, Any] = {
                 "type": self.type,
                 "content": {
                     "index": tc.index, "id": tc.id,
                     "name": tc.name, "arguments": tc.arguments,
                 },
             }
+            if self.time:
+                d["time"] = self.time
+            return d
         if self.type == "tool_call_results" and isinstance(self.content, list):
-            return {
+            d = {
                 "type": self.type,
                 "content": [
                     {"tool_call_id": r.tool_call_id, "name": r.name, "content": r.content}
                     for r in self.content if isinstance(r, ToolCallResult)
                 ],
             }
-        d: dict[str, Any] = {"type": self.type, "content": self.content}
+            if self.time:
+                d["time"] = self.time
+            return d
+        d = {"type": self.type, "content": self.content}
         if self.media:
             d["media"] = self.media
         if self.time:

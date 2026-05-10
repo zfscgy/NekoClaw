@@ -397,9 +397,23 @@ class NekoChatChannel(BaseChannel):
 
         if delta.type == "subagent_ref" and isinstance(delta.content, dict):
             ref = delta.content
+            session_id = ref.get("session_id", "")
+            # Drop the in-memory replay buffer for this subagent now that the
+            # main agent has emitted (and persisted) the subagent_ref. Until
+            # this point we keep the buffer alive so reconnecting clients can
+            # still see a finished subagent's output even if the main agent
+            # is busy with a long iteration and hasn't picked up the
+            # announcement yet.
+            if session_id.startswith("subagent:"):
+                sid = session_id.split(":", 1)[1]
+                subs = self._subagent_state.get(conversation_id)
+                if subs is not None and sid in subs:
+                    subs.pop(sid, None)
+                    if not subs:
+                        self._subagent_state.pop(conversation_id, None)
             await self._broadcast(conversation_id, {
                 "type": "subagent_ref",
-                "session_id": ref.get("session_id", ""),
+                "session_id": session_id,
                 "label": ref.get("label", ""),
                 "status": ref.get("status", "ok"),
                 "task": ref.get("task", ""),
@@ -1116,13 +1130,15 @@ class NekoChatChannel(BaseChannel):
                 except Exception:
                     break
 
-        # Replay only *running* subagents from in-memory state.
-        # Completed subagents are already persisted as subagent_ref entries
-        # in the session JSONL and were replayed with the history above.
+        # Replay every subagent that still has in-memory state. Entries are
+        # only dropped once the main agent emits a subagent_ref (which is
+        # persisted to the session JSONL just before the broadcast). So if a
+        # subagent has finished but the main agent is still busy with a long
+        # iteration and hasn't picked up the announcement, the buffer is
+        # still here and we replay it — including a synthetic subagent_end so
+        # the frontend marks the card complete instead of leaving it spinning.
         for sub_id, state in list(self._subagent_state.get(cid, {}).items()):
-            if state.get("status") != "running":
-                continue
-
+            status = state.get("status", "running")
             try:
                 await ws.send_str(json.dumps({
                     "type": "subagent_start",
@@ -1143,6 +1159,20 @@ class NekoChatChannel(BaseChannel):
             for payload in self._cur_round_to_subagent_replay(cid, sub_id, state.get("cur_round", {})):
                 try:
                     await ws.send_str(json.dumps(payload, ensure_ascii=False))
+                except Exception:
+                    break
+
+            if status != "running":
+                session_id = state.get("session_id") or f"subagent:{sub_id}"
+                try:
+                    await ws.send_str(json.dumps({
+                        "type": "subagent_end",
+                        "subagent_id": sub_id,
+                        "status": status,
+                        "session_id": session_id,
+                        "conversation_id": cid,
+                        "_replay": True,
+                    }, ensure_ascii=False))
                 except Exception:
                     break
 

@@ -17,6 +17,7 @@ These helpers split bootstrap concerns out of ``__main__.py``:
 """
 
 from nekoclaw.startup.browser import nekochat_url, open_nekochat_browser
+from nekoclaw.startup.banner import print_neko_startup_art
 from nekoclaw.startup.config import (
     load_runtime_config,
     missing_gateway_config_keys,
@@ -32,5 +33,6 @@ __all__ = [
     "missing_gateway_config_keys",
     "nekochat_url",
     "open_nekochat_browser",
+    "print_neko_startup_art",
     "sync_optional_skills",
 ]

@@ -100,7 +100,7 @@ cd ../..
 ```bash
 nekoclaw            # 等价于 `python -m nekoclaw`
 # 常用参数
-nekoclaw --port 18790 --workspace ~/.nekoclaw/workspace --verbose
+nekoclaw --workspace ~/.nekoclaw/workspace --verbose
 ```
 
 ### 方式二：Windows 便携式离线包（含 portable Chrome）
@@ -188,16 +188,15 @@ Portable Chrome 路径为：
 ## 运行
 
 ```bash
-nekoclaw                     # 默认 127.0.0.1:18790
-nekoclaw --port 8080
-nekoclaw --workspace D:\nekoclaw\ws
-nekoclaw --config path\to\config.json
-nekoclaw --verbose
+nekoclaw                                      # 直接启动
+nekoclaw --workspace D:\nekoclaw\ws           # 指定工作区
+nekoclaw --config path\to\config.json         # 指定配置文件
+nekoclaw --verbose                            # 输出详细日志
 ```
 
 启动后：
 
-- Web UI（NekoChat）：`http://127.0.0.1:<port>/`
+- Web UI（NekoChat）：默认 `http://127.0.0.1:8899/`，可在 `~/.nekoclaw/channels.json` 的 `nekochat.host` / `nekochat.port` 修改
 - 其它 IM 通道（Telegram / QQ / DingTalk 等）按配置自动接入
 
 ---

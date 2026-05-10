@@ -52,6 +52,7 @@ def load_runtime_config(
     from nekoclaw.config.loader import (
         create_default_configs,
         prompt_configs,
+        save_config,
         set_config_path,
     )
     from nekoclaw.config.manager import get_global_config, set_global_config
@@ -63,12 +64,12 @@ def load_runtime_config(
             console.print(f"[red]找不到配置文件喵: {config_path}[/red]")
             sys.exit(1)
         set_config_path(config_path)
-    else:
-        created = create_default_configs()
-        if created:
-            console.print(
-                f"  [dim]喵咪已经在 {created[0].parent} 帮主人摆好默认配置啦～[/dim]"
-            )
+
+    created = create_default_configs(config_path)
+    if created:
+        console.print(
+            f"  [dim]喵咪已经在 {created[0].parent} 帮主人摆好默认配置啦～[/dim]"
+        )
 
     loaded = get_global_config()
     missing = missing_gateway_config_keys(loaded)
@@ -89,4 +90,10 @@ def load_runtime_config(
 
     if workspace:
         loaded.agents.defaults.workspace = workspace
+
+    # Refresh the full config bundle on every startup so newly added schema
+    # fields (and any in-memory tweaks like ``--workspace``) are mirrored to
+    # config.json / providers.json / channels.json / tools.json on disk.
+    save_config(loaded, config_path)
+    set_global_config(loaded)
     return loaded

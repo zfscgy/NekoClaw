@@ -3,6 +3,7 @@
 import asyncio
 import json
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
@@ -46,6 +47,7 @@ class SubagentManager:
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
         self._session_tasks: dict[str, set[str]] = {}  # session_key -> {task_id, ...}
+        self._subagent_labels: dict[str, str] = {}  # task_id -> display_label (only while running)
 
     async def spawn(
         self,
@@ -64,11 +66,13 @@ class SubagentManager:
             self._run_subagent(task_id, task, display_label, origin)
         )
         self._running_tasks[task_id] = bg_task
+        self._subagent_labels[task_id] = display_label
         if session_key:
             self._session_tasks.setdefault(session_key, set()).add(task_id)
 
         def _cleanup(_: asyncio.Task) -> None:
             self._running_tasks.pop(task_id, None)
+            self._subagent_labels.pop(task_id, None)
             if session_key and (ids := self._session_tasks.get(session_key)):
                 ids.discard(task_id)
                 if not ids:
@@ -131,7 +135,9 @@ class SubagentManager:
             ]
 
             # Persist the initial user message
-            session.messages.append(StreamDelta(type="user", content=task))
+            session.messages.append(StreamDelta(
+                type="user", content=task, time=datetime.now(timezone.utc).isoformat(),
+            ))
             self.sessions.save(session)
 
             max_iterations = 50
@@ -165,8 +171,13 @@ class SubagentManager:
                         f"{report_retry_prompt}\n\n"
                         f"ReportTask retry {report_retry_count}/{report_retry_limit}."
                     )
-                    messages.append(StreamDelta(type="user", content=retry_message))
-                    session.messages.append(StreamDelta(type="user", content=retry_message))
+                    retry_time = datetime.now(timezone.utc).isoformat()
+                    messages.append(StreamDelta(
+                        type="user", content=retry_message, time=retry_time,
+                    ))
+                    session.messages.append(StreamDelta(
+                        type="user", content=retry_message, time=retry_time,
+                    ))
                     self.sessions.save(session)
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=channel, chat_id=chat_id,
@@ -262,13 +273,20 @@ class SubagentManager:
                         tool_results.append(ToolCallResult(
                             tool_call_id=tool_call.id, name=tool_call.name, content=result,
                         ))
-                    messages.append(StreamDelta(type="tool_call_results", content=tool_results))
-                    session.messages.append(StreamDelta(type="tool_call_results", content=tool_results))
+                    tool_results_time = datetime.now(timezone.utc).isoformat()
+                    messages.append(StreamDelta(
+                        type="tool_call_results", content=tool_results, time=tool_results_time,
+                    ))
+                    session.messages.append(StreamDelta(
+                        type="tool_call_results", content=tool_results, time=tool_results_time,
+                    ))
 
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=channel, chat_id=chat_id,
                         type="delta",
-                        msg=StreamDelta(type="tool_call_results", content=tool_results),
+                        msg=StreamDelta(
+                            type="tool_call_results", content=tool_results, time=tool_results_time,
+                        ),
                         metadata=sub_meta,
                     ))
 
@@ -289,8 +307,13 @@ class SubagentManager:
                     if response_content:
                         messages.append(StreamDelta(type="content", content=response_content))
                         session.messages.append(StreamDelta(type="content", content=response_content))
-                    messages.append(StreamDelta(type="user", content=reminder))
-                    session.messages.append(StreamDelta(type="user", content=reminder))
+                    reminder_time = datetime.now(timezone.utc).isoformat()
+                    messages.append(StreamDelta(
+                        type="user", content=reminder, time=reminder_time,
+                    ))
+                    session.messages.append(StreamDelta(
+                        type="user", content=reminder, time=reminder_time,
+                    ))
                     self.sessions.save(session)
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=channel, chat_id=chat_id,
@@ -426,3 +449,14 @@ class SubagentManager:
     def get_running_count(self) -> int:
         """Return the number of currently running subagents."""
         return len(self._running_tasks)
+
+    def get_session_running(self, session_key: str) -> list[tuple[str, str]]:
+        """Return ``(task_id, label)`` for subagents still running for *session_key*."""
+        ids = self._session_tasks.get(session_key, set())
+        out: list[tuple[str, str]] = []
+        for task_id in ids:
+            task = self._running_tasks.get(task_id)
+            if task is None or task.done():
+                continue
+            out.append((task_id, self._subagent_labels.get(task_id, task_id)))
+        return out

@@ -50,7 +50,6 @@ def search_duckduckgo(client, keyword: str) -> list[SearchResult]:
     resp = client.fetch(
         url,
         google_search=False,
-        network_idle=True,
         # Wait for the results container before parsing
         wait_selector="div#links",
         wait_selector_state="attached",

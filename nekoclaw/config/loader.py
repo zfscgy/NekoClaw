@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from nekoclaw.config.schema import Config
+from nekoclaw.config.schema import Config, ProviderConfig
 
 
 # Global variable to store current config path (for multi-instance support)
@@ -38,35 +38,38 @@ def _get_tools_path(config_path: Path) -> Path:
     return config_path.parent / "tools.json"
 
 
+def _all_config_paths(config_path: Path) -> list[Path]:
+    """Return the four files that make up a config bundle, in canonical order."""
+    return [
+        config_path,
+        _get_providers_path(config_path),
+        _get_channels_path(config_path),
+        _get_tools_path(config_path),
+    ]
+
+
 def create_default_configs(config_path: Path | None = None) -> list[Path]:
     """
-    Write default config files to disk if they do not already exist.
+    Make sure the full config bundle exists on disk.
 
-    Returns a list of paths that were newly created.
+    The bundle is composed of ``config.json`` plus the three sidecar files
+    (``providers.json`` / ``channels.json`` / ``tools.json``). Any file that is
+    missing is materialized from the currently loaded values (which fall back
+    to schema defaults when the field is absent), so users never end up with a
+    partial install.
+
+    Returns the list of paths that were newly created.
     """
     path = config_path or get_config_path()
-    created: list[Path] = []
+    paths = _all_config_paths(path)
 
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        default = Config()
-        data = default.model_dump(by_alias=True)
-        # Split into sidecar files so the layout matches save_config conventions.
-        for key, sidecar_path in (
-            ("providers", _get_providers_path(path)),
-            ("channels", _get_channels_path(path)),
-            ("tools", _get_tools_path(path)),
-        ):
-            section = data.pop(key, {})
-            with open(sidecar_path, "w", encoding="utf-8") as f:
-                json.dump(section, f, indent=2, ensure_ascii=False)
-            created.append(sidecar_path)
+    missing = [p for p in paths if not p.exists()]
+    if not missing:
+        return []
 
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        created.insert(0, path)
-
-    return created
+    cfg = load_config(path)
+    save_config(cfg, path)
+    return missing
 
 
 def load_config(config_path: Path | None = None) -> Config:
@@ -113,11 +116,12 @@ def load_config(config_path: Path | None = None) -> Config:
 
 def save_config(config: Config, config_path: Path | None = None) -> None:
     """
-    Save configuration to file.
+    Save configuration to disk, always writing the full bundle.
 
-    If a providers.json, channels.json, or tools.json file already exists
-    alongside config.json, the respective section is saved there and omitted
-    from config.json. Otherwise everything is saved to config.json as before.
+    The four files (``config.json`` plus the ``providers``/``channels``/
+    ``tools`` sidecars) are written unconditionally; any sidecar that does
+    not yet exist is created. The respective section is dropped from
+    ``config.json`` so each value lives in exactly one file.
 
     Args:
         config: Configuration to save.
@@ -133,10 +137,9 @@ def save_config(config: Config, config_path: Path | None = None) -> None:
         ("channels", _get_channels_path(path)),
         ("tools", _get_tools_path(path)),
     ):
-        if sidecar_path.exists():
-            section_data = data.pop(key, {})
-            with open(sidecar_path, "w", encoding="utf-8") as f:
-                json.dump(section_data, f, indent=2, ensure_ascii=False)
+        section_data = data.pop(key, {})
+        with open(sidecar_path, "w", encoding="utf-8") as f:
+            json.dump(section_data, f, indent=2, ensure_ascii=False)
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
@@ -177,12 +180,23 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     console.print("[bold]OpenAI 服务设置喵[/bold]")
     openai = cfg.providers.openai
 
+    previous_base = openai.api_base
     new_base = Prompt.ask(
         "  openai_base_url",
         default=openai.api_base or "",
         show_default=bool(openai.api_base),
     ).strip()
     openai.api_base = new_base or None
+
+    # If the base URL just changed (or the list was never populated) re-derive
+    # the curated suggestions for the new host, then promote the first
+    # recommended model id as the default — the schema-level fallback
+    # ("gpt-5.4") usually isn't reachable through provider-specific gateways.
+    if openai.api_base != previous_base or not openai.recommended_models:
+        inferred = ProviderConfig.infer_models(openai.api_base)
+        if inferred:
+            openai.recommended_models = inferred
+            cfg.agents.defaults.model = inferred[0]
 
     current_key = openai.api_key
     new_key = Prompt.ask(

@@ -58,7 +58,6 @@ def search_bing(client, keyword: str) -> list[SearchResult]:
     url = f"{BING_SEARCH}?{query}"
     resp = client.fetch(
         url,
-        network_idle=True,
         # Wait for the main results list before parsing
         wait_selector="#b_results",
         wait_selector_state="attached",

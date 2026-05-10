@@ -17,6 +17,7 @@ from nekoclaw.startup import (
     load_runtime_config,
     nekochat_url,
     open_nekochat_browser,
+    print_neko_startup_art,
     sync_optional_skills,
 )
 from nekoclaw.utils.helpers import sync_workspace_templates
@@ -52,7 +53,6 @@ def _make_provider(config: Config):
 
 
 def gateway(
-    port: int = 18790,
     workspace: str | None = None,
     verbose: bool = False,
     config: str | None = None,
@@ -60,6 +60,7 @@ def gateway(
     """Start the nekoclaw gateway."""
     log_path = configure_logging(verbose=verbose)
 
+    print_neko_startup_art(console)
     console.rule(
         f"[bold magenta]{__logo__} 欢迎使用 NekoClaw，主人～现在就由 Neko 来帮你启动吧[/bold magenta]"
     )
@@ -84,9 +85,7 @@ def gateway(
     console.rule("[dim]✦ 步骤 1 完成喵 ✦[/dim]")
 
     console.print("[bold cyan][2/2] 启动猫娘 AI ～[/bold cyan]")
-    console.print(
-        f"{__logo__} 正在端口 [bold]{port}[/bold] 上唤醒 nekoclaw 喵～请稍等一下下"
-    )
+    console.print(f"{__logo__} 正在唤醒 nekoclaw 喵～请稍等一下下")
     from nekoclaw.agent.loop import AgentLoop
     from nekoclaw.bus.queue import MessageBus
     from nekoclaw.channels.manager import ChannelManager
@@ -286,12 +285,11 @@ def main() -> None:
         prog="nekoclaw",
         description=f"{__logo__} nekoclaw - 个人猫娘 AI 助手网关喵～",
     )
-    parser.add_argument("--port", "-p", type=int, default=18790, help="网关端口（默认 18790）")
     parser.add_argument("--workspace", "-w", default=None, help="工作区目录")
     parser.add_argument("--verbose", "-v", action=None, help="输出详细日志")
     parser.add_argument("--config", "-c", default=None, help="配置文件路径")
     args = parser.parse_args()
-    gateway(port=args.port, workspace=args.workspace, verbose=args.verbose, config=args.config)
+    gateway(workspace=args.workspace, verbose=args.verbose, config=args.config)
 
 
 if __name__ == "__main__":

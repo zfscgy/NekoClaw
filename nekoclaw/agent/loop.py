@@ -141,6 +141,7 @@ class AgentLoop:
                 "task": meta.get("subagent_task", ""),
                 "announce": msg.content,
             },
+            time=datetime.now(timezone.utc).isoformat(),
         )
 
     def _drain_inbox_into_messages(
@@ -151,8 +152,14 @@ class AgentLoop:
     ) -> list[StreamDelta]:
         """Drain any queued in-flight messages for this session and append them
         as ``user`` turns to *messages*. Returns the injected deltas.
+
+        Whenever at least one drained message is a subagent completion
+        announcement, an additional transient ``system`` delta summarising
+        finished/running subagents for this session is appended so the main
+        agent stays aware of overall subagent state.
         """
         injected: list[StreamDelta] = []
+        finished_subagents: list[tuple[str, str]] = []  # (task_id, label)
         while not inbox.empty():
             try:
                 pending = inbox.get_nowait()
@@ -170,10 +177,72 @@ class AgentLoop:
                     type="user",
                     content=pending.content,
                     media=media_paths or [],
+                    time=datetime.now(timezone.utc).isoformat(),
                 )
+            else:
+                meta = pending.metadata
+                ref_session = meta.get("subagent_session_id", "")
+                task_id = ref_session.split(":", 1)[1] if ":" in ref_session else ref_session
+                label = meta.get("subagent_label", "") or task_id or "subagent"
+                finished_subagents.append((task_id, label))
             messages.append(delta)
             injected.append(delta)
+
+        if finished_subagents:
+            status_delta = self._build_subagent_status_delta(session, finished_subagents)
+            messages.append(status_delta)
+            injected.append(status_delta)
+
         return injected
+
+    def _build_subagent_status_delta(
+        self,
+        session: Session,
+        finished_now: list[tuple[str, str]],
+    ) -> StreamDelta:
+        """Build a transient ``system`` delta summarising subagent state.
+
+        ``finished_now`` lists ``(task_id, label)`` for subagents whose
+        announcements were drained in this batch and haven't been persisted
+        yet. The full "Finished" list is built from persisted ``subagent_ref``
+        deltas on ``session.messages`` plus this batch, so the main agent sees
+        every subagent that has finished in this session. Currently-running
+        subagents are queried from the manager.
+
+        The delta is typed ``system`` so it informs the next LLM iteration
+        without being persisted to ``session.messages``.
+        """
+        seen_ids: set[str] = set()
+        finished: list[tuple[str, str]] = []
+
+        for m in session.messages:
+            if m.type != "subagent_ref" or not isinstance(m.content, dict):
+                continue
+            sid = m.content.get("session_id", "") or ""
+            task_id = sid.split(":", 1)[1] if ":" in sid else sid
+            if not task_id or task_id in seen_ids:
+                continue
+            seen_ids.add(task_id)
+            label = m.content.get("label", "") or task_id
+            finished.append((task_id, label))
+
+        for task_id, label in finished_now:
+            if not task_id or task_id in seen_ids:
+                continue
+            seen_ids.add(task_id)
+            finished.append((task_id, label))
+
+        running = self.subagents.get_session_running(session.key)
+
+        def _fmt(items: list[tuple[str, str]]) -> str:
+            return ", ".join(f"'{label}' ({tid})" for tid, label in items) if items else "(none)"
+
+        lines = [
+            f"Subagents status: {len(finished)} finished, {len(running)} running.",
+            f"Finished: {_fmt(finished)}",
+            f"Running: {_fmt(running)}",
+        ]
+        return StreamDelta(type="system", content="\n".join(lines))
 
     def _release_session_inbox(self, session_key: str) -> None:
         """Deregister the in-flight inbox for *session_key* and re-publish any
@@ -358,12 +427,17 @@ class AgentLoop:
                     ))
 
                 if tool_results:
-                    messages.append(StreamDelta(type="tool_call_results", content=tool_results))
+                    now_iso = datetime.now(timezone.utc).isoformat()
+                    messages.append(StreamDelta(
+                        type="tool_call_results", content=tool_results, time=now_iso,
+                    ))
 
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=channel, chat_id=chat_id,
                         type="delta",
-                        msg=StreamDelta(type="tool_call_results", content=tool_results),
+                        msg=StreamDelta(
+                            type="tool_call_results", content=tool_results, time=now_iso,
+                        ),
                     ))
 
                 self._save_session(session)
@@ -491,6 +565,7 @@ class AgentLoop:
         session = self.sessions.get_or_create(key)
 
         initial_subagent_ref = self._subagent_ref_delta(msg) if msg.type == "subagent" else None
+        emit_subagent_ref = False
         if initial_subagent_ref is not None and isinstance(initial_subagent_ref.content, dict):
             session_id = initial_subagent_ref.content.get("session_id")
             ref_exists = any(
@@ -499,13 +574,7 @@ class AgentLoop:
                 and m.content.get("session_id") == session_id
                 for m in session.messages
             )
-            if not ref_exists:
-                await self.bus.publish_outbound(OutboundMessage(
-                    channel=channel,
-                    chat_id=chat_id,
-                    type="delta",
-                    msg=initial_subagent_ref,
-                ))
+            emit_subagent_ref = not ref_exists
 
         if msg.channel != "system":
             unconsolidated = len(session.messages) - session.last_consolidated
@@ -552,6 +621,26 @@ class AgentLoop:
         # can persist them for UI replay without re-embedding raw base64 blobs.
         if media_paths:
             session.initial_messages[session._save_offset].media = media_paths
+
+        # Persist the subagent_ref to JSONL *before* broadcasting the delta.
+        # The channel clears its in-memory subagent buffer when the delta is
+        # broadcast, so the JSONL must already contain the ref to survive a
+        # client reload. We do this after ``build_messages`` so that the LLM
+        # context for this turn isn't built from a session that already has
+        # the announce content as a ``subagent_ref`` (which ``_process_history``
+        # would re-emit as a user message and double-count the announce).
+        # ``_save_session``/``_pending_subagent_ref`` deduplicate by
+        # session_id, so the user delta in ``initial_messages`` will be
+        # dropped on the next flush instead of being persisted alongside.
+        if emit_subagent_ref and initial_subagent_ref is not None:
+            session.messages.append(initial_subagent_ref)
+            self.sessions.save(session)
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=channel,
+                chat_id=chat_id,
+                type="delta",
+                msg=initial_subagent_ref,
+            ))
 
         # Register an in-flight inbox so follow-up user messages arriving
         # while the agent loop is running can be injected at the next
@@ -611,6 +700,7 @@ class AgentLoop:
                                 "task": sub_ref.get("subagent_task", ""),
                                 "announce": raw,
                             },
+                            time=delta.time or datetime.now(timezone.utc).isoformat(),
                         ))
                         existing_subagent_refs.add(session_id)
                     sub_ref_emitted = True
@@ -638,7 +728,12 @@ class AgentLoop:
                     if not filtered:
                         continue
                     content = filtered
-                session.messages.append(StreamDelta(type="user", content=content, media=delta.media))
+                session.messages.append(StreamDelta(
+                    type="user",
+                    content=content,
+                    media=delta.media,
+                    time=delta.time or datetime.now(timezone.utc).isoformat(),
+                ))
                 continue
 
             if delta.type == "subagent_ref" and isinstance(delta.content, dict):

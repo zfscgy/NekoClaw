@@ -97,15 +97,17 @@ class ProviderConfig(Base):
     api_base: str | None = None
     extra_headers: dict[str, str] | None = None  # Custom headers (e.g. APP-Code for AiHubMix)
     # Curated list of model ids surfaced by the UI as quick-pick suggestions.
-    # Always auto-derived from ``api_base`` via :meth:`infer_models` — see the
-    # ``_apply_infer_models`` validator below — so any value supplied in JSON
-    # or via the manager API is overwritten on validation.
+    # If empty, it is auto-populated from ``api_base`` via :meth:`infer_models`
+    # — see the ``_apply_infer_models`` validator below. Any non-empty list
+    # supplied in JSON (e.g. customized by ``prompt_configs``) is preserved
+    # so the user's picks round-trip through reloads.
     recommended_models: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _apply_infer_models(self) -> "ProviderConfig":
-        """Re-derive ``recommended_models`` from ``api_base`` on every load."""
-        self.recommended_models = self.infer_models(self.api_base)
+        """Seed ``recommended_models`` from ``api_base`` when it is empty."""
+        if not self.recommended_models:
+            self.recommended_models = self.infer_models(self.api_base)
         return self
 
     @staticmethod
@@ -142,8 +144,6 @@ class HeartbeatConfig(Base):
 class GatewayConfig(Base):
     """Gateway/server configuration."""
 
-    host: str = "0.0.0.0"
-    port: int = 18790
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
 
 

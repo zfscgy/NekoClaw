@@ -4,7 +4,7 @@ import base64
 import mimetypes
 import platform
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -147,7 +147,11 @@ Reply directly with text for conversations. Only use the 'send_message_with_atta
         return [
             StreamDelta(type="system", content=self.build_system_prompt()),
             *processed,
-            StreamDelta(type="user", content=merged),
+            StreamDelta(
+                type="user",
+                content=merged,
+                time=datetime.now(timezone.utc).isoformat(),
+            ),
         ]
 
     @staticmethod
