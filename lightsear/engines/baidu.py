@@ -45,7 +45,6 @@ def search_baidu(client, keyword: str) -> list[SearchResult]:
     url = f"https://www.baidu.com/s?{urlencode({'wd': keyword, 'rn': RESULTS_PER_PAGE})}"
     resp = client.fetch(
         url,
-        network_idle=True,
         # Wait for the main results column to be present
         wait_selector="#content_left",
         wait_selector_state="attached",

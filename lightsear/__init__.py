@@ -20,6 +20,7 @@ from lightsear.engines.google import search_google
 from lightsear.exceptions import LightsearError
 from lightsear.models import SearchResult
 from lightsear.pool import SessionPool  # re-exported for callers who build custom pools
+from lightsear.utils import decode_url_chinese_only
 
 if t.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -344,7 +345,7 @@ def search(
             SearchResult(
                 title=base.title,
                 content=base.content,
-                url=url,
+                url=decode_url_chinese_only(url),
                 sources=merged_sources,
             )
         )

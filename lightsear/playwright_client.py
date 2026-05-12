@@ -211,9 +211,7 @@ class PlaywrightCDPSession:
         if self._runtime is None:
             raise RuntimeError("Session is not open")
         del google_search
-
-        if network_idle:
-            logger.warning("network_idle=True requested; using domcontentloaded for stability")
+        del network_idle
         try:
             return self._runtime.submit(
                 self._runtime.fetch(
