@@ -1,11 +1,11 @@
-"""Agent loop: the core processing engine."""
+"""Agent loop: the core processing engine for a single conversation session."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import traceback
-import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -34,14 +34,22 @@ if TYPE_CHECKING:
 
 class AgentLoop:
     """
-    The agent loop is the core processing engine.
+    The agent loop is the core processing engine for a *single conversation
+    session*.
 
-    It:
-    1. Receives messages from the bus
-    2. Builds context with history, memory, skills
-    3. Calls the LLM
-    4. Executes tool calls
-    5. Sends responses back
+    Each instance:
+
+    1. Receives messages from its own thread-local inbox (populated by
+       :class:`~nekoclaw.agent.dispatcher.AgentLoopDispatcher`).
+    2. Builds context with history, memory, skills.
+    3. Calls the LLM.
+    4. Executes tool calls.
+    5. Sends responses back to the shared message bus.
+
+    The loop is designed to run inside its own thread with its own
+    ``asyncio`` event loop so that multiple conversations can execute in
+    parallel.  The shared :class:`~nekoclaw.bus.queue.MessageBus` is
+    thread-aware and forwards outbound puts to its owner loop.
     """
 
     def __init__(
@@ -50,19 +58,25 @@ class AgentLoop:
         bus: MessageBus,
         provider: LLMProvider,
         workspace: Path,
+        session_manager: SessionManager | None = None,
         model: str | None = None,
         max_iterations: int = 40,
         temperature: float = 0.1,
         max_tokens: int = 4096,
         memory_window: int = 100,
         reasoning_effort: str | None = None,
-        cron_service: CronService | None = None,
+        cron_service: "CronService | None" = None,
         restrict_to_workspace: bool = False,
     ):
         self.session = session
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
+        # SessionManager is shared across all loops (owned by the dispatcher)
+        # so saves/load reuse the same on-disk cache.  Fall back to a
+        # private manager when no shared one is provided (mostly useful for
+        # tests / direct construction).
+        self._session_manager = session_manager or SessionManager(workspace)
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
         self.temperature = temperature
@@ -73,13 +87,12 @@ class AgentLoop:
         self.restrict_to_workspace = restrict_to_workspace
 
         self.context = ContextBuilder(workspace)
-        self.sessions = SessionManager(workspace)
         self.tools = ToolRegistry()
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
             bus=bus,
-            sessions=self.sessions,
+            sessions=self._session_manager,
             model=self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
@@ -88,20 +101,99 @@ class AgentLoop:
         )
 
         self._running = False
-        self._consolidating: set[str] = set()
+        # Loop-local async primitives — created when the worker thread starts
+        # its event loop in ``_async_main``.  They are ``None`` until then.
+        self._processing_lock: asyncio.Lock | None = None
+        self._consolidation_lock: asyncio.Lock | None = None
+        self._inbox: asyncio.Queue[InboundMessage] | None = None
+        self._inflight_inbox: asyncio.Queue[InboundMessage] | None = None
+        self._consolidating: bool = False
         self._consolidation_tasks: set[asyncio.Task] = set()
-        self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
-        self._active_tasks: dict[str, list[asyncio.Task]] = {}
-        self._processing_lock = asyncio.Lock()
-        # session_keys whose currently-running agent loop should stop at the
-        # next iteration boundary. Populated by ``user_pause`` inbound messages.
-        self._pause_requests: set[str] = set()
-        # Per-session in-flight inboxes. While an agent loop is running for a
-        # session, additional ``type="user"`` and ``type="subagent"`` inbound
-        # messages are routed here and injected at the next iteration boundary
-        # instead of queuing behind ``_processing_lock``.
-        self._session_inboxes: dict[str, asyncio.Queue[InboundMessage]] = {}
+        # ``True`` while the user has asked the currently-running iteration to
+        # stop at the next iteration boundary.  Cleared by the loop itself.
+        self._pause_requested: bool = False
+
+        # Cross-thread plumbing
+        self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._ready_event = threading.Event()
+        self._pending_inbox: list[InboundMessage] = []
+        self._pending_inbox_lock = threading.Lock()
+
         self._register_default_tools()
+
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
+
+    def start_thread(self) -> threading.Thread:
+        """Start this agent loop in a new daemon thread.
+
+        The thread spins up its own ``asyncio`` event loop and runs
+        :meth:`run` until :meth:`stop` is called.  Returns the worker thread.
+        Safe to call multiple times — subsequent calls are no-ops.
+        """
+        if self._thread is not None and self._thread.is_alive():
+            return self._thread
+
+        self._thread = threading.Thread(
+            target=self._thread_main,
+            name=f"AgentLoop-{self.session.key}",
+            daemon=True,
+        )
+        self._thread.start()
+        return self._thread
+
+    def wait_ready(self, timeout: float | None = 10.0) -> bool:
+        """Block until the worker thread has bound its event loop.
+
+        Returns ``True`` once the loop is accepting submissions, or
+        ``False`` on timeout.
+        """
+        return self._ready_event.wait(timeout=timeout)
+
+    def _thread_main(self) -> None:
+        try:
+            asyncio.run(self._async_main())
+        except Exception:
+            logger.exception("AgentLoop thread crashed for session {}", self.session.key)
+        finally:
+            self._ready_event.set()  # unblock any laggards waiting on ready
+
+    async def _async_main(self) -> None:
+        self._event_loop = asyncio.get_running_loop()
+        self._inbox = asyncio.Queue()
+        self._processing_lock = asyncio.Lock()
+        self._consolidation_lock = asyncio.Lock()
+
+        # Drain anything that arrived before the event loop was ready.
+        with self._pending_inbox_lock:
+            for m in self._pending_inbox:
+                self._inbox.put_nowait(m)
+            self._pending_inbox.clear()
+
+        self._ready_event.set()
+        await self.run()
+
+    def submit(self, msg: InboundMessage) -> None:
+        """Submit a message to this loop's inbox.
+
+        Thread-safe: may be called from any thread.  If the worker has not
+        started yet, the message is buffered and replayed when the loop's
+        event loop comes up.
+        """
+        loop = self._event_loop
+        inbox = self._inbox
+        if loop is None or inbox is None or not loop.is_running():
+            with self._pending_inbox_lock:
+                self._pending_inbox.append(msg)
+            return
+
+        loop.call_soon_threadsafe(inbox.put_nowait, msg)
+
+    # ------------------------------------------------------------------ #
+    # Tools / context
+    # ------------------------------------------------------------------ #
 
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -119,6 +211,8 @@ class AgentLoop:
     @staticmethod
     def _routing_session_key(msg: InboundMessage) -> str:
         """Return the parent conversation key used for dispatch/in-flight routing."""
+        if msg.session_key_override:
+            return msg.session_key_override
         if msg.channel == "system":
             channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id
                                 else ("cli", msg.chat_id))
@@ -244,13 +338,13 @@ class AgentLoop:
         ]
         return StreamDelta(type="system", content="\n".join(lines))
 
-    def _release_session_inbox(self, session_key: str) -> None:
-        """Deregister the in-flight inbox for *session_key* and re-publish any
-        messages that arrived but were never consumed, so they go through the
-        normal dispatch path.
+    def _release_inflight_inbox(self) -> None:
+        """Drop the in-flight inbox and re-queue any leftover messages onto
+        the loop's main inbox so a follow-up dispatch can pick them up.
         """
-        inbox = self._session_inboxes.pop(session_key, None)
-        if inbox is None:
+        inbox = self._inflight_inbox
+        self._inflight_inbox = None
+        if inbox is None or self._inbox is None:
             return
         while not inbox.empty():
             try:
@@ -258,12 +352,10 @@ class AgentLoop:
             except asyncio.QueueEmpty:
                 break
             logger.info(
-                "Re-publishing unconsumed in-flight message for session {}",
-                session_key,
+                "Re-queuing unconsumed in-flight message for session {}",
+                self.session.key,
             )
-            # Best effort: schedule re-publish without awaiting to avoid
-            # blocking callers inside a ``finally`` block.
-            asyncio.create_task(self.bus.publish_inbound(pending))
+            self._inbox.put_nowait(pending)
 
     def _save_inbound_media(self, session_key: str, media: list[str] | None) -> list[str] | None:
         """Persist *media* paths into the session's media directory. Returns
@@ -278,7 +370,7 @@ class AgentLoop:
                 logger.warning("Media file not found, skipping: {}", p)
                 continue
             try:
-                dest = self.sessions.save_media(session_key, src)
+                dest = self._session_manager.save_media(session_key, src)
                 saved.append(str(dest))
             except Exception:
                 logger.warning("Failed to save media file {}, using original path", p)
@@ -291,6 +383,10 @@ class AgentLoop:
             if tool := self.tools.get(name):
                 if hasattr(tool, "set_context"):
                     tool.set_context(channel, chat_id, *([message_id] if name == "send_message_with_attachments" else []))
+
+    # ------------------------------------------------------------------ #
+    # Core processing
+    # ------------------------------------------------------------------ #
 
     async def _run_agent_loop(
         self,
@@ -310,11 +406,11 @@ class AgentLoop:
 
         # In-flight inbox is registered by ``_process_message`` (our caller)
         # so cleanup happens even if this loop raises.
-        inbox = self._session_inboxes.get(session.key)
+        inbox = self._inflight_inbox
 
         while iteration < self.max_iterations:
-            if session.key in self._pause_requests:
-                self._pause_requests.discard(session.key)
+            if self._pause_requested:
+                self._pause_requested = False
                 logger.info("Agent loop paused by user for session {}", session.key)
                 if final_content is None:
                     final_content = "Paused by user."
@@ -479,58 +575,56 @@ class AgentLoop:
         return final_content, tools_used
 
     async def run(self) -> None:
-        """Run the agent loop, dispatching inbound messages as concurrent tasks."""
+        """Consume the per-loop inbox and dispatch each message as a task.
+
+        The loop pulls messages submitted via :meth:`submit` (typically by
+        :class:`~nekoclaw.agent.dispatcher.AgentLoopDispatcher`) until
+        :meth:`stop` is called.
+        """
+        assert self._inbox is not None, "AgentLoop.run() called outside its worker thread"
         self._running = True
-        logger.info("Agent loop started")
+        logger.info("Agent loop started for session {}", self.session.key)
 
         while self._running:
             try:
-                msg = await asyncio.wait_for(self.bus.consume_inbound(), timeout=1.0)
+                msg = await asyncio.wait_for(self._inbox.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
 
             if msg.type == "user_pause":
-                # Don't dispatch as a regular message: just flag the session so
-                # the currently-running ``_run_agent_loop`` exits at its next
-                # iteration boundary.
-                routing_key = self._routing_session_key(msg)
-                self._pause_requests.add(routing_key)
-                logger.info("Pause requested for session {}", routing_key)
+                # Flag the currently-running ``_run_agent_loop`` to exit at
+                # its next iteration boundary.  Does not start a new task.
+                self._pause_requested = True
+                logger.info("Pause requested for session {}", self.session.key)
                 continue
 
-            # If an agent loop is already running for this session, route
-            # regular user messages and subagent announcements to its
-            # in-flight inbox so they can be picked up at the next iteration
-            # boundary instead of queuing behind ``_processing_lock``.
-            routing_key = self._routing_session_key(msg)
-            if msg.type in {"user", "subagent"} and (inbox := self._session_inboxes.get(routing_key)):
-                await inbox.put(msg)
+            # If an agent loop is already running, route regular user
+            # messages and subagent announcements to its in-flight inbox so
+            # they can be picked up at the next iteration boundary instead of
+            # queuing behind ``_processing_lock``.
+            if msg.type in {"user", "subagent"} and self._inflight_inbox is not None:
+                await self._inflight_inbox.put(msg)
                 logger.info(
                     "Routed in-flight {} message to running loop for session {}",
-                    msg.type, routing_key,
+                    msg.type, self.session.key,
                 )
                 continue
-            
-            # In this case, the message is not "injected" to a running loop
-            task = asyncio.create_task(self._dispatch(msg))
-            self._active_tasks.setdefault(routing_key, []).append(task)
-            task.add_done_callback(lambda t, k=routing_key: self._active_tasks.get(k, []) and self._active_tasks[k].remove(t) if t in self._active_tasks.get(k, []) else None)
-        await self.bus.publish_outbound(OutboundMessage(
-            channel=msg.channel, chat_id=msg.chat_id, type="stream_end",
-        ))
+
+            asyncio.create_task(self._dispatch(msg))
 
     async def _dispatch(self, msg: InboundMessage) -> None:
-        """Process a message under the global lock."""
+        """Process a message under the per-session processing lock."""
+        assert self._processing_lock is not None
         async with self._processing_lock:
             try:
                 await self._process_message(msg)
             except asyncio.CancelledError:
-                logger.info("Task cancelled for session {}", msg.session_key)
+                logger.info("Task cancelled for session {}", self.session.key)
                 raise
             except Exception:
                 tb_lines = traceback.format_exc().splitlines()
                 short_tb = "\n".join(tb_lines[-15:])
-                logger.exception("Error processing message for session {}", msg.session_key)
+                logger.exception("Error processing message for session {}", self.session.key)
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=msg.channel, chat_id=msg.chat_id,
                     msg=StreamDelta(type="content", content=f"An error occurred:\n{short_tb}"),
@@ -543,26 +637,20 @@ class AgentLoop:
     def stop(self) -> None:
         """Stop the agent loop."""
         self._running = False
-        logger.info("Agent loop stopping")
+        logger.info("Agent loop stopping for session {}", self.session.key)
 
-    async def _process_message(
-        self,
-        msg: InboundMessage,
-        session_key: str | None = None,
-    ) -> str:
+    async def _process_message(self, msg: InboundMessage) -> str:
         """Process a single inbound message. Returns the final text content."""
         if msg.channel == "system":
             channel, chat_id = (msg.chat_id.split(":", 1) if ":" in msg.chat_id
                                 else ("cli", msg.chat_id))
             logger.info("Processing system message from {}", msg.sender_id)
-            key = f"{channel}:{chat_id}"
         else:
             preview = msg.content[:80] + "..." if len(msg.content) > 80 else msg.content
             logger.info("Processing message from {}:{}: {}", msg.channel, msg.sender_id, preview)
             channel, chat_id = msg.channel, msg.chat_id
-            key = session_key or msg.session_key
 
-        session = self.sessions.get_or_create(key)
+        session = self.session
 
         initial_subagent_ref = self._subagent_ref_delta(msg) if msg.type == "subagent" else None
         emit_subagent_ref = False
@@ -578,16 +666,19 @@ class AgentLoop:
 
         if msg.channel != "system":
             unconsolidated = len(session.messages) - session.last_consolidated
-            if unconsolidated >= self.memory_window and session.key not in self._consolidating:
-                self._consolidating.add(session.key)
-                lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
+            if unconsolidated >= self.memory_window and not self._consolidating:
+                self._consolidating = True
+                lock = self._consolidation_lock
 
                 async def _consolidate_and_unlock():
                     try:
-                        async with lock:
+                        if lock is not None:
+                            async with lock:
+                                await self._consolidate_memory(session)
+                        else:
                             await self._consolidate_memory(session)
                     finally:
-                        self._consolidating.discard(session.key)
+                        self._consolidating = False
                         _task = asyncio.current_task()
                         if _task is not None:
                             self._consolidation_tasks.discard(_task)
@@ -605,7 +696,7 @@ class AgentLoop:
             if isinstance(message_tool, MessageTool):
                 message_tool.start_turn()
 
-        media_paths = self._save_inbound_media(key, msg.media)
+        media_paths = self._save_inbound_media(session.key, msg.media)
 
         history = session.get_history(max_messages=self.memory_window)
         session.initial_messages = self.context.build_messages(
@@ -634,7 +725,7 @@ class AgentLoop:
         # dropped on the next flush instead of being persisted alongside.
         if emit_subagent_ref and initial_subagent_ref is not None:
             session.messages.append(initial_subagent_ref)
-            self.sessions.save(session)
+            self._session_manager.save(session)
             await self.bus.publish_outbound(OutboundMessage(
                 channel=channel,
                 chat_id=chat_id,
@@ -645,7 +736,7 @@ class AgentLoop:
         # Register an in-flight inbox so follow-up user messages arriving
         # while the agent loop is running can be injected at the next
         # iteration boundary instead of queuing behind ``_processing_lock``.
-        self._session_inboxes[session.key] = asyncio.Queue()
+        self._inflight_inbox = asyncio.Queue()
         try:
             final_content, tools_used = await self._run_agent_loop(
                 channel=channel,
@@ -653,7 +744,7 @@ class AgentLoop:
                 session=session,
             )
         finally:
-            self._release_session_inbox(session.key)
+            self._release_inflight_inbox()
 
         if final_content is None:
             # If the agent already replied via the message tool, the response
@@ -747,7 +838,7 @@ class AgentLoop:
         session._save_offset = len(messages)
         session.updated_at = datetime.now()
         session._pending_subagent_ref = None  # type: ignore[attr-defined]
-        self.sessions.save(session)
+        self._session_manager.save(session)
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""
@@ -759,10 +850,39 @@ class AgentLoop:
     async def process_direct(
         self,
         content: str,
-        session_key: str = "cli:direct",
         channel: str = "cli",
         chat_id: str = "direct",
     ) -> str:
-        """Process a message directly (for CLI or cron usage)."""
-        msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
-        return await self._process_message(msg, session_key=session_key)
+        """Process a message directly on this loop (for CLI/cron/heartbeat usage).
+
+        Must be called from the loop's own event loop.  Cross-thread callers
+        should use :meth:`run_process_threadsafe` (or the dispatcher's
+        :meth:`AgentLoopDispatcher.process_direct`).
+        """
+        msg = InboundMessage(
+            channel=channel,
+            sender_id="user",
+            chat_id=chat_id,
+            content=content,
+            session_key_override=self.session.key,
+        )
+        return await self._process_message(msg)
+
+    def run_process_threadsafe(
+        self,
+        content: str,
+        channel: str = "cli",
+        chat_id: str = "direct",
+        timeout: float | None = None,
+    ) -> "asyncio.futures.Future[str]":
+        """Schedule a direct process call onto this loop's event loop from
+        another thread.  Returns a ``concurrent.futures.Future`` so callers
+        can ``await asyncio.wrap_future(...)`` from their own loop or
+        ``.result()`` synchronously.
+        """
+        if self._event_loop is None or not self._event_loop.is_running():
+            raise RuntimeError(
+                f"AgentLoop for session {self.session.key!r} is not running"
+            )
+        coro = self.process_direct(content, channel=channel, chat_id=chat_id)
+        return asyncio.run_coroutine_threadsafe(coro, self._event_loop)

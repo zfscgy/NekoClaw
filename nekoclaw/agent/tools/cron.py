@@ -1,6 +1,5 @@
 """Cron tool for scheduling reminders and tasks."""
 
-from contextvars import ContextVar
 from typing import Any
 
 from nekoclaw.agent.tools.base import Tool
@@ -15,20 +14,32 @@ class CronTool(Tool):
         self._cron = cron_service
         self._channel = ""
         self._chat_id = ""
-        self._in_cron_context: ContextVar[bool] = ContextVar("cron_in_context", default=False)
+        # Plain attribute rather than ``ContextVar`` so the flag can be set
+        # from one thread (the main loop running ``on_cron_job``) and read
+        # from another (the per-session agent loop thread that actually
+        # executes tool calls).  Each ``CronTool`` instance is owned by a
+        # single ``AgentLoop``, so concurrent cron callbacks targeting
+        # different sessions hit different instances.
+        self._in_cron_context: bool = False
 
     def set_context(self, channel: str, chat_id: str) -> None:
         """Set the current session context for delivery."""
         self._channel = channel
         self._chat_id = chat_id
 
-    def set_cron_context(self, active: bool):
-        """Mark whether the tool is executing inside a cron job callback."""
-        return self._in_cron_context.set(active)
+    def set_cron_context(self, active: bool) -> bool:
+        """Mark whether the tool is executing inside a cron job callback.
 
-    def reset_cron_context(self, token) -> None:
+        Returns the previous value so the caller can restore it via
+        :meth:`reset_cron_context`.
+        """
+        prev = self._in_cron_context
+        self._in_cron_context = active
+        return prev
+
+    def reset_cron_context(self, token: bool) -> None:
         """Restore previous cron context."""
-        self._in_cron_context.reset(token)
+        self._in_cron_context = token
 
     @property
     def name(self) -> str:
@@ -82,7 +93,7 @@ class CronTool(Tool):
         **kwargs: Any,
     ) -> str:
         if action == "add":
-            if self._in_cron_context.get():
+            if self._in_cron_context:
                 return "Error: cannot schedule new jobs from within a cron job execution"
             return self._add_job(message, every_seconds, cron_expr, tz, at)
         elif action == "list":

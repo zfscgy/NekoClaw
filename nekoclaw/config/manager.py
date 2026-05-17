@@ -247,13 +247,25 @@ def _apply_provider_live(new_cfg: Config) -> None:
 
 
 def _apply_agent_live(new_cfg: Config) -> None:
-    """Apply agent defaults to the running agent loop and subagent manager."""
+    """Apply agent defaults to the running dispatcher (and every active loop).
+
+    Prefers the :meth:`AgentLoopDispatcher.apply_defaults` fast path, which
+    propagates settings to every active per-session :class:`AgentLoop` and
+    its :class:`SubagentManager`.  Falls back to direct attribute mutation
+    for any legacy agent object that doesn't expose ``apply_defaults``.
+    """
     agent = get_agent()
     if agent is None:
         return
 
-    d = new_cfg.agents.defaults
     try:
+        apply_defaults = getattr(agent, "apply_defaults", None)
+        if callable(apply_defaults):
+            apply_defaults(new_cfg)
+            logger.info("Live agent defaults reconfigured (dispatcher)")
+            return
+
+        d = new_cfg.agents.defaults
         agent.model = d.model
         agent.temperature = d.temperature
         agent.max_tokens = d.max_tokens

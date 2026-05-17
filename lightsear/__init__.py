@@ -355,20 +355,20 @@ def search(
 def web_fetch(
     url: str,
     *,
-    mode: t.Literal["markdown", "text"] = "markdown",
+    mode: t.Literal["markdown", "html"] = "markdown",
     wait: int = 8_000,
 ) -> str:
-    """Fetch a URL and extract readable content as markdown or plain text.
+    """Fetch a URL and extract readable content as markdown or html.
 
     Call :func:`initialize_pool` once before the first use to set up the
     browser session pool.
 
     :param url: URL to fetch.
-    :param mode: ``'markdown'`` (default) or ``'text'``.
+    :param mode: ``'markdown'`` (default) or ``'html'``.
     :param wait: Extra milliseconds to wait for JS rendering before scraping.
     """
-    if mode not in {"markdown", "text"}:
-        raise ValueError("mode must be 'markdown' or 'text'")
+    if mode not in {"markdown", "html"}:
+        raise ValueError("mode must be 'markdown' or 'html'")
 
     # Keep this import local so environments without markdown dependencies
     # can still import and use search-only APIs.

@@ -86,7 +86,7 @@ def gateway(
 
     console.print("[bold cyan][2/2] 启动猫娘 AI ～[/bold cyan]")
     console.print(f"{__logo__} 正在唤醒 nekoclaw 喵～请稍等一下下")
-    from nekoclaw.agent.loop import AgentLoop
+    from nekoclaw.agent.dispatcher import AgentLoopDispatcher
     from nekoclaw.bus.queue import MessageBus
     from nekoclaw.channels.manager import ChannelManager
     from nekoclaw.config.paths import get_cron_dir
@@ -94,7 +94,6 @@ def gateway(
     from nekoclaw.cron.types import CronJob
     from nekoclaw.heartbeat.service import HeartbeatService
     from nekoclaw.providers.base import StreamDelta
-    from nekoclaw.session.manager import SessionManager
 
     sync_workspace_templates(
         cfg.workspace_path, template_locale=cfg.agents.defaults.template_locale
@@ -108,8 +107,7 @@ def gateway(
     cron_store_path = get_cron_dir() / "jobs.json"
     cron = CronService(cron_store_path)
 
-    agent = AgentLoop(
-        session=SessionManager(cfg.workspace_path).get_or_create("gateway:default"),
+    agent = AgentLoopDispatcher(
         bus=bus,
         provider=provider,
         workspace=cfg.workspace_path,
@@ -134,14 +132,17 @@ def gateway(
             f"Scheduled instruction: {job.payload.message}"
         )
 
-        cron_tool = agent.tools.get("cron")
+        session_key = f"cron:{job.id}"
+        loop = agent.get_or_create_loop(session_key)
+
+        cron_tool = loop.tools.get("cron")
         cron_token = None
         if isinstance(cron_tool, CronTool):
             cron_token = cron_tool.set_cron_context(True)
         try:
             response = await agent.process_direct(
                 reminder_note,
-                session_key=f"cron:{job.id}",
+                session_key=session_key,
                 channel=job.payload.channel or "system",
                 chat_id=job.payload.to or "direct",
             )
@@ -149,7 +150,7 @@ def gateway(
             if isinstance(cron_tool, CronTool) and cron_token is not None:
                 cron_tool.reset_cron_context(cron_token)
 
-        message_tool = agent.tools.get("send_message_with_attachments")
+        message_tool = loop.tools.get("send_message_with_attachments")
         if isinstance(message_tool, MessageTool) and message_tool._sent_in_turn:
             return response
 
