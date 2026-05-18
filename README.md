@@ -10,6 +10,7 @@ Chrome 与独立 Python 运行环境，用户双击即可启动）。
 ## 目录
 
 - [基本架构](#基本架构)
+- [公共资源准备](#公共资源准备两种方式都需要)
 - [安装方式](#安装方式)
   - [方式一：本地 Python 开发环境](#方式一本地-python-开发环境)
   - [方式二：Windows 打包分发（AutoCython + PyInstaller）](#方式二windows-打包分发autocython--pyinstaller)
@@ -50,9 +51,9 @@ IM / Web 通道的消息，为每个会话起一个独立的 `AgentLoop`，通�
 | 内置（`skills/internal`） | `memory`、`cron`、`github`、`tmux`、`skill-creator`                                                                       | 主程序启动时自动可用                       |
 | 可选（`skills/optional`） | `weather`、`news-reader`、`internet-trending`、`read-office-files`、`create-docx`、`create-pptx`                          | 首次启动同步到 workspace，可在 UI 中开关 |
 
-可选 Skill 中的 `create-docx` / `create-pptx` 会通过 `exec` 工具调用 NekoClaw 自带
-的 Python 环境（见下方「Windows 打包分发」），所以即便部署机上没有安装 Python，
-也可以直接生成 Office 文件。
+可选 Skill 中的 `create-docx` / `create-pptx` 会通过 `exec` 工具调用 NekoClaw
+自带的 Python 环境（见下方 [公共资源准备](#公共资源准备两种方式都需要)），
+所以即便部署机上没有安装 Python，也可以直接生成 Office 文件。
 
 ### Lightsear（`lightsear/`）
 
@@ -77,6 +78,67 @@ Chrome via CDP），统一封装了 Google / Bing / DuckDuckGo / 百度，并向
 
 ---
 
+## 公共资源准备（两种方式都需要）
+
+无论是**本地 Python 调试**，还是**Windows 打包分发**，NekoClaw 运行时都依赖
+两份不随仓库提交的外部资源，需要先手动放到 `resources/` 下对应位置（它们
+都已在 `.gitignore` 中忽略）：
+
+### 1. 便携 Chrome —— `resources/chrome/chrome-win64/`
+
+供 `web` 工具 / Lightsear / Playwright 通过 CDP 接管使用。推荐用 Google 官方的
+**Chrome for Testing**（与 Playwright 版本兼容性最好）。
+
+- 下载页面：<https://googlechromelabs.github.io/chrome-for-testing/>
+  （选 `chrome` → `win64` 通道，下载对应平台的 zip）
+- 解压后把整个 `chrome-win64/` 目录放到 `resources/chrome/` 下，使得：
+
+  ```text
+  resources/chrome/chrome-win64/chrome.exe   <-- 必须存在
+  ```
+
+- 程序读取路径由 `~/.nekoclaw/tools.json` 的
+  `tools.web.chrome_executable_path` 控制，默认值就是
+  `./resources/chrome/chrome-win64/chrome.exe`，所以放到上面这个位置就能开箱即用。
+- 如果你想用系统已经装好的 Chrome / Chromium，也可以把
+  `chrome_executable_path` 改成绝对路径，这种情况下可以跳过这一步。
+
+### 2. 独立 Python 运行时 —— `resources/packpy/win64/python-build-standalone/`
+
+供 `exec` 工具（以及 `create-docx` / `create-pptx` 等 Skill）使用——
+NekoClaw 会用它在 `resources/packpy/win64/.venvs/dev/` 下建一个干净的 venv，
+和宿主 Python 解耦，方便用户脚本随便装包而不污染主环境。
+
+- 来源仓库：<https://github.com/astral-sh/python-build-standalone>
+- 下载页面：<https://github.com/astral-sh/python-build-standalone/releases>
+  （Windows 选 `cpython-3.x.x+yyyymmdd-x86_64-pc-windows-msvc-install_only.tar.gz`）
+- 解压后整个目录放到：
+
+  ```text
+  resources/packpy/win64/python-build-standalone/   <-- 解压后里面应当包含 python.exe
+  ```
+
+- 然后在该目录下跑一次准备脚本，把 `exec` 工具需要的离线 wheels 下载下来：
+
+  ```powershell
+  cd resources\packpy\win64
+  .\build.ps1
+  ```
+
+  脚本会调用 standalone Python 的 `pip download`，把 `requirements.txt` 列出的
+  包（`python-docx`、`python-pptx` 等）下载到 `resources/packpy/win64/wheels/`。
+
+> 这两份资源对**本地 Python 调试**和**Windows 打包分发**都是必要的：
+>
+> - 调试模式下，NekoClaw 第一次需要时会直接读取 `resources/` 下的原文件；
+> - 打包模式下，`build/install.py` 会把整个 `resources/` 目录原样拷进 PyInstaller 产物。
+>
+> 如果完全不打算使用 `web` 工具，可以跳过 Chrome；如果完全不打算使用 `exec`
+> 工具（以及依赖它的 Skill），可以跳过 python-build-standalone。其它情况
+> 下两份都要准备好。
+
+---
+
 ## 安装方式
 
 NekoClaw 提供两种安装路径：开发 / 自建环境推荐 **本地 Python**；面向非开发者用户
@@ -91,7 +153,8 @@ NekoClaw 提供两种安装路径：开发 / 自建环境推荐 **本地 Python*
 - Python ≥ 3.11
 - Node.js ≥ 18（构建前端）
 - 推荐使用 `conda` 或 `venv` 创建隔离环境
-- 想用 Web 工具的话需要本机能跑 Chromium / Chrome（PyPI 上的 Playwright 会自动下载，或者用便携 Chrome 也行）
+- 已按上文 [公共资源准备](#公共资源准备两种方式都需要) 放好
+  `resources/chrome/chrome-win64/` 与 `resources/packpy/win64/python-build-standalone/`
 
 **安装步骤**
 
@@ -100,17 +163,19 @@ NekoClaw 提供两种安装路径：开发 / 自建环境推荐 **本地 Python*
 git clone https://github.com/<your-org>/NekoClaw.git
 cd NekoClaw
 
-# 2. 建立并激活 Python 虚拟环境（示例：venv）
+# 2. 按 [公共资源准备] 章节先把 chrome-win64/ 和 python-build-standalone/ 放进 resources/
+
+# 3. 建立并激活 Python 虚拟环境（示例：venv）
 python -m venv .venv
 # Windows
 .\.venv\Scripts\Activate.ps1
 # macOS / Linux
 source .venv/bin/activate
 
-# 3. 安装 NekoClaw 及其依赖（以可编辑模式安装）
+# 4. 安装 NekoClaw 及其依赖（以可编辑模式安装）
 pip install -e .
 
-# 4. 编译 NekoChat 前端静态页面
+# 5. 编译 NekoChat 前端静态页面
 cd nekochat/nekochat_frontend
 npm install
 npm run build
@@ -136,26 +201,20 @@ nekoclaw --workspace ~/.nekoclaw/workspace --verbose
 
 #### A. 开发机：构建分发包
 
-1. **准备便携 Chrome**
+1. **准备便携 Chrome 和独立 Python 运行时**
 
-   把 Chrome / Chromium 的便携版解压到 `resources/chrome/chrome-win64/`，使得
-   `resources\chrome\chrome-win64\chrome.exe` 存在。
+   按上文 [公共资源准备](#公共资源准备两种方式都需要) 完成以下两件事：
 
-2. **准备离线 Python 环境**（首次或依赖变化时）
+   - 把 Chrome for Testing 解压到 `resources/chrome/chrome-win64/`
+   - 把 python-build-standalone 解压到
+     `resources/packpy/win64/python-build-standalone/`，并在该目录下跑过一次
+     `.\build.ps1`，确保 `resources/packpy/win64/wheels/` 下有
+     `python-docx` / `python-pptx` 等离线 wheel
 
-   ```powershell
-   cd resources\packpy\win64
-   # 把 python-build-standalone 解压到 python-build-standalone\
-   # 然后下载 exec 工具需要的 wheels（python-docx / python-pptx 等）：
-   .\build.ps1
-   ```
+   `build/install.py` 会把整个 `resources/` 目录拷进 PyInstaller 产物，
+   所以这一步是分发包能否在目标机上独立运行的前提。
 
-   产物：
-
-   - `resources\packpy\win64\python-build-standalone\`（独立 Python 运行时）
-   - `resources\packpy\win64\wheels\*.whl`（离线 wheel 缓存）
-
-3. **安装打包工具链**
+2. **安装打包工具链**
 
    在用于打包的 Python 环境里安装：
 
@@ -164,7 +223,7 @@ nekoclaw --workspace ~/.nekoclaw/workspace --verbose
    pip install AutoCython-jianjun   # 提供 AutoCython 命令
    ```
 
-4. **一键打包**
+3. **一键打包**
 
    ```powershell
    python build\install.py
@@ -179,7 +238,7 @@ nekoclaw --workspace ~/.nekoclaw/workspace --verbose
    | `--skip-npm-install`       | 只跑 `npm run build`，不重新拉依赖                                            |
    | `--skip-cython`            | 跳过 AutoCython 编译，直接用上一次的 `build/win/cython-src/`                  |
    | `--keep-source`            | AutoCython 编译后保留 `.py` 源码（默认会替换为 `.pyd`）                       |
-   | `--strict-resources`       | 缺少 packpy / chrome / 前端等资源时直接报错（默认只警告）                     |
+   | `--strict-resources`       | 缺少 packpy / chrome / 前端等资源时直接报错（默认只警告，但产出的分发包跑不起来） |
    | `--windowed`               | 构建 GUI 版（无控制台）；默认 `--console` 方便看启动日志                      |
    | `--autocython-workers N`   | 透传给 AutoCython 的并发数                                                    |
 
