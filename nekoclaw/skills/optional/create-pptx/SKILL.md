@@ -51,6 +51,7 @@ description: Create PowerPoint slides programmatically using python-pptx. Genera
 
 ### 字体与文本排版
 - **文本框自动换行（必须）**：必须为长文本设置 `tf.word_wrap = True`，防止文字溢出幻灯片边界。
+- **指定文本语言（必须）**：每一个 `run` 都必须设置 `run.font.language_id`，**默认中文 `MSO_LANGUAGE_ID.SIMPLIFIED_CHINESE`**。否则 PowerPoint 会把中文当作英文进行拼写校对，导致 PPT 打开后出现大量红色波浪线（误报为拼写错误）。
 - 中文首选 `微软雅黑`，英文可选 `Calibri` / `Arial`；混排时一种字体即可兼顾
 - 单张 slide 内不超过 2 种字体
 - 标题用 Bold，正文用 Regular；慎用 Italic（仅用于提示性、次要信息）
@@ -76,6 +77,7 @@ from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_AUTO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.lang import MSO_LANGUAGE_ID  # 必须：用于设置文本语言，避免误判校对
 
 prs = Presentation()
 prs.slide_width  = Inches(13.33)
@@ -128,6 +130,7 @@ run.font.name = "微软雅黑"
 run.font.size = Pt(16)
 run.font.bold = True
 run.font.color.rgb = RGBColor(0x1A, 0x56, 0x9A)
+run.font.language_id = MSO_LANGUAGE_ID.SIMPLIFIED_CHINESE  # 关键：指定中文，避免校对误报
 
 # 追加段落
 p2 = tf.add_paragraph()
@@ -135,7 +138,10 @@ p2.space_before = Pt(4)
 run2 = p2.add_run()
 run2.text = "正文内容"
 run2.font.size = Pt(14)
+run2.font.language_id = MSO_LANGUAGE_ID.SIMPLIFIED_CHINESE
 ```
+
+> 💡 **建议**：在脚本中封装一个 `make_run(p, text, ...)` 辅助函数，统一在内部设置 `language_id`，避免遗漏。参见示例脚本中的 `add_run` / 文本辅助函数实现。
 
 ### 分隔线（Connector）
 

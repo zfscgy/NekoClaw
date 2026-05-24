@@ -5,6 +5,8 @@ import time
 import pytest
 
 import lightsear
+from lightsear import engines as lightsear_engines
+from lightsear import runtime as lightsear_runtime
 from lightsear.models import SearchResult
 from lightsear.pool import SessionPool
 
@@ -45,17 +47,19 @@ def test_search_reuses_persistent_sessions():
             )
         ]
 
-    original_engines = lightsear.ENGINES
-    original_pool = lightsear._pool
-    lightsear.ENGINES = {"google": fake_engine}
-    lightsear._pool = SessionPool(size=1, session_factory=make_session_factory(closed_ids))
+    original_engines = dict(lightsear_engines.ENGINES)
+    original_pool = lightsear_runtime._pool
+    lightsear_engines.ENGINES.clear()
+    lightsear_engines.ENGINES["google"] = fake_engine
+    lightsear_runtime._pool = SessionPool(size=1, session_factory=make_session_factory(closed_ids))
     try:
         lightsear.search("first", sources=["google"], parallel=False)
         lightsear.search("second", sources=["google"], parallel=False)
     finally:
-        lightsear._pool.close()
-        lightsear._pool = original_pool
-        lightsear.ENGINES = original_engines
+        lightsear_runtime._pool.close()
+        lightsear_runtime._pool = original_pool
+        lightsear_engines.ENGINES.clear()
+        lightsear_engines.ENGINES.update(original_engines)
 
     assert session_ids == [0, 0]
     assert closed_ids == [0]
@@ -89,19 +93,19 @@ def test_search_parallel_uses_multiple_pooled_sessions():
 
         return fake_engine
 
-    original_engines = lightsear.ENGINES
-    original_pool = lightsear._pool
-    lightsear.ENGINES = {
-        "google": make_engine("google"),
-        "bing": make_engine("bing"),
-    }
-    lightsear._pool = SessionPool(size=2, session_factory=make_session_factory(closed_ids))
+    original_engines = dict(lightsear_engines.ENGINES)
+    original_pool = lightsear_runtime._pool
+    lightsear_engines.ENGINES.clear()
+    lightsear_engines.ENGINES["google"] = make_engine("google")
+    lightsear_engines.ENGINES["bing"] = make_engine("bing")
+    lightsear_runtime._pool = SessionPool(size=2, session_factory=make_session_factory(closed_ids))
     try:
         results = lightsear.search("query", sources=["google", "bing"], parallel=True)
     finally:
-        lightsear._pool.close()
-        lightsear._pool = original_pool
-        lightsear.ENGINES = original_engines
+        lightsear_runtime._pool.close()
+        lightsear_runtime._pool = original_pool
+        lightsear_engines.ENGINES.clear()
+        lightsear_engines.ENGINES.update(original_engines)
 
     assert concurrency["max"] == 2
     assert seen_session_ids == {0, 1}
@@ -110,21 +114,25 @@ def test_search_parallel_uses_multiple_pooled_sessions():
 
 
 def test_initialize_pool_replaces_existing_pool(monkeypatch: pytest.MonkeyPatch):
-    original_pool = lightsear._pool
-    monkeypatch.setattr(lightsear, "_pool", None)
+    original_pool = lightsear_runtime._pool
+    monkeypatch.setattr(lightsear_runtime, "_pool", None)
     try:
-        lightsear.initialize_pool(chrome_executable_path=r"C:\chrome.exe", user_data_dir=r"C:\tmp\profile")
-        first_pool = lightsear._pool
+        lightsear.initialize_pool(
+            chrome_executable_path=r"C:\chrome.exe", user_data_dir=r"C:\tmp\profile"
+        )
+        first_pool = lightsear_runtime._pool
 
-        lightsear.initialize_pool(chrome_executable_path=r"C:\chrome.exe", user_data_dir=r"C:\tmp\profile")
-        second_pool = lightsear._pool
+        lightsear.initialize_pool(
+            chrome_executable_path=r"C:\chrome.exe", user_data_dir=r"C:\tmp\profile"
+        )
+        second_pool = lightsear_runtime._pool
 
         assert first_pool is not second_pool
         assert first_pool._closed
     finally:
-        if lightsear._pool is not None:
-            lightsear._pool.close()
-        lightsear._pool = original_pool
+        if lightsear_runtime._pool is not None:
+            lightsear_runtime._pool.close()
+        lightsear_runtime._pool = original_pool
 
 
 def test_search_uses_global_pool(monkeypatch):
@@ -143,16 +151,18 @@ def test_search_uses_global_pool(monkeypatch):
         ]
 
     fake_pool = SessionPool(size=1, session_factory=make_session_factory(closed_ids))
-    original_engines = lightsear.ENGINES
-    original_pool = lightsear._pool
-    lightsear.ENGINES = {"google": fake_engine}
-    lightsear._pool = fake_pool
+    original_engines = dict(lightsear_engines.ENGINES)
+    original_pool = lightsear_runtime._pool
+    lightsear_engines.ENGINES.clear()
+    lightsear_engines.ENGINES["google"] = fake_engine
+    lightsear_runtime._pool = fake_pool
     try:
         lightsear.search("first", sources=["google"], parallel=False)
         lightsear.search("second", sources=["google"], parallel=False)
     finally:
-        lightsear.ENGINES = original_engines
-        lightsear._pool = original_pool
+        lightsear_engines.ENGINES.clear()
+        lightsear_engines.ENGINES.update(original_engines)
+        lightsear_runtime._pool = original_pool
         fake_pool.close()
 
     assert session_ids == [0, 0]

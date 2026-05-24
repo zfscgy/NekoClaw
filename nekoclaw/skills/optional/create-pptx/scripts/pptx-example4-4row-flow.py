@@ -9,6 +9,7 @@ from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_CONNECTOR, MSO_AUTO_SHAPE_TYPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.lang import MSO_LANGUAGE_ID
 from pptx.oxml import parse_xml
 
 
@@ -22,8 +23,11 @@ BOX_TEXT = RGBColor(0x1A, 0x56, 0x9A)
 DESC_TEXT = RGBColor(0x33, 0x33, 0x33)
 ARROW_COLOR = RGBColor(0x5B, 0x9B, 0xD5)
 
-# ── 字体 ─────────────────────────────────────────────────────────────────────
+# ── 字体与语言 ────────────────────────────────────────────────────────────────
 FONT = "微软雅黑"
+# 必须为每个 run 设置 language_id，否则 PowerPoint 会按英文进行拼写校对，
+# 导致中文文本出现大量红色波浪线（误报为拼写错误）。
+LANG_ZH = MSO_LANGUAGE_ID.SIMPLIFIED_CHINESE
 
 # ── 幻灯片尺寸（16:9 宽屏）──────────────────────────────────────────────────
 SLIDE_W, SLIDE_H = 13.33, 7.5
@@ -84,6 +88,7 @@ def add_title(slide, text):
     run.font.size = Pt(28)
     run.font.bold = True
     run.font.color.rgb = TITLE_COLOR
+    run.font.language_id = LANG_ZH
 
 
 def add_red_line(slide):
@@ -124,6 +129,7 @@ def add_flow_box(slide, left, top, width, height, text):
     run.font.size = Pt(16)
     run.font.bold = True
     run.font.color.rgb = BOX_TEXT
+    run.font.language_id = LANG_ZH
 
     return box
 
@@ -143,6 +149,7 @@ def add_description(slide, left, top, width, height, text):
     run.font.name = FONT
     run.font.size = Pt(14)
     run.font.color.rgb = DESC_TEXT
+    run.font.language_id = LANG_ZH
 
 
 def add_down_connector(slide, upper_box, lower_box):

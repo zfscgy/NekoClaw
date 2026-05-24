@@ -172,6 +172,8 @@ p.level = 0                     # 缩进级别（0-8）
 ### 运行（Run）与字体
 
 ```python
+from pptx.enum.lang import MSO_LANGUAGE_ID
+
 run = p.add_run()
 run.text = "示例文字"
 
@@ -182,6 +184,47 @@ f.bold  = True
 f.italic = False
 f.underline = False
 f.color.rgb = RGBColor(0x1A, 0x56, 0x9A)
+f.language_id = MSO_LANGUAGE_ID.SIMPLIFIED_CHINESE  # ⚠️ 必须：标记为中文，避免拼写校对误报
+```
+
+### ⚠️ 文本语言（`language_id`）—— 极其重要
+
+**问题**：python-pptx 默认不写 `lang` 属性，PowerPoint 打开后会按系统默认语言（通常是英文）对所有文本进行拼写检查，导致**整页中文都被红色波浪线标记为拼写错误**。
+
+**解决**：每个 `run` 都设置 `language_id`，python-pptx 会写入 `<a:rPr lang="zh-CN" ...>`，PowerPoint 即按中文进行校对。
+
+```python
+from pptx.enum.lang import MSO_LANGUAGE_ID
+
+run.font.language_id = MSO_LANGUAGE_ID.SIMPLIFIED_CHINESE   # 简体中文 zh-CN
+# 其它常用：
+# MSO_LANGUAGE_ID.TRADITIONAL_CHINESE     # 繁体中文 zh-TW
+# MSO_LANGUAGE_ID.ENGLISH_US              # 英文 en-US
+# MSO_LANGUAGE_ID.JAPANESE                # 日文 ja-JP
+```
+
+**推荐封装**：避免在每个 run 后面重复一行，统一封装一个 helper：
+
+```python
+from pptx.enum.lang import MSO_LANGUAGE_ID
+
+DEFAULT_LANG = MSO_LANGUAGE_ID.SIMPLIFIED_CHINESE
+DEFAULT_FONT = "微软雅黑"
+
+def add_run(paragraph, text, *, size=14, bold=False, italic=False,
+            color=None, font=DEFAULT_FONT, lang=DEFAULT_LANG):
+    """统一创建带中文语言标记的 run，避免遗漏 language_id。"""
+    run = paragraph.add_run()
+    run.text = text
+    f = run.font
+    f.name = font
+    f.size = Pt(size)
+    f.bold = bold
+    f.italic = italic
+    if color is not None:
+        f.color.rgb = color
+    f.language_id = lang
+    return run
 ```
 
 ### 形状内置文本框（直接操作矩形等形状的文字）

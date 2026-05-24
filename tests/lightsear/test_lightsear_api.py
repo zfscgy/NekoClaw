@@ -1,6 +1,9 @@
 import pytest
 
 import lightsear
+from lightsear import engines as lightsear_engines
+from lightsear import runtime as lightsear_runtime
+from lightsear import searcher as lightsear_searcher
 
 PROXY = "http://127.0.0.1:10808"
 TIMEOUT_S = 45.0
@@ -14,17 +17,17 @@ def test_search_unknown_source_raises():
 
 
 def test_search_requires_pool_init(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(lightsear, "_pool", None)
+    monkeypatch.setattr(lightsear_runtime, "_pool", None)
     with pytest.raises(RuntimeError, match="initialize_pool"):
         lightsear.search("query")
 
 
 def test_search_decodes_chinese_url_characters(monkeypatch: pytest.MonkeyPatch):
     raw_url = "https://example.com/%E4%BD%A0%E5%A5%BD%20world"
-    monkeypatch.setattr(lightsear, "_pool", object())
-    monkeypatch.setattr(lightsear, "_ensure_chromium_alive", lambda: None)
+    monkeypatch.setattr(lightsear_runtime, "_pool", object())
+    monkeypatch.setattr(lightsear_runtime, "ensure_chromium_alive", lambda: None)
     monkeypatch.setattr(
-        lightsear,
+        lightsear_searcher,
         "_execute_search",
         lambda *_args, **_kwargs: (
             [
@@ -38,6 +41,7 @@ def test_search_decodes_chinese_url_characters(monkeypatch: pytest.MonkeyPatch):
             {},
         ),
     )
+    monkeypatch.setitem(lightsear_engines.ENGINES, "google", lambda *_: [])
 
     results = lightsear.search("query", sources=["google"])
 

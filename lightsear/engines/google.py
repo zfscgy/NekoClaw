@@ -96,7 +96,6 @@ def search_google(client, keyword: str) -> list[SearchResult]:
     url = _build_search_url(keyword, start=0)
     resp = client.fetch(
         url,
-        google_search=False,
         # Block until the organic-results container is present in the DOM
         wait_selector="#rso",
         wait_selector_state="attached",

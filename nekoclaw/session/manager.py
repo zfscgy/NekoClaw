@@ -124,6 +124,7 @@ class SessionManager:
         session = self._load(key)
         if session is None:
             session = Session(key=key)
+            self.save(session)
 
         self._cache[key] = session
         return session

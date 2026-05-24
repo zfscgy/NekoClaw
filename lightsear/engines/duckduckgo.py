@@ -49,7 +49,6 @@ def search_duckduckgo(client, keyword: str) -> list[SearchResult]:
     url = f"{DDG_HTML_URL}?{urlencode({'q': keyword, 'kl': 'wt-wt'})}"
     resp = client.fetch(
         url,
-        google_search=False,
         # Wait for the results container before parsing
         wait_selector="div#links",
         wait_selector_state="attached",

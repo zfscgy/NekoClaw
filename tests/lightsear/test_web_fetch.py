@@ -4,6 +4,8 @@ import types
 import pytest
 
 import lightsear
+from lightsear import fetcher as lightsear_fetcher
+from lightsear import runtime as lightsear_runtime
 from lightsear._encoding import decode_html_body
 
 
@@ -32,7 +34,8 @@ def test_web_fetch_uses_session_pool_and_markdownify(monkeypatch: pytest.MonkeyP
         calls["markdownify"] = page
         return "hello world"
 
-    monkeypatch.setattr(lightsear, "_pool", FakePool())
+    monkeypatch.setattr(lightsear_runtime, "_pool", FakePool())
+    monkeypatch.setattr(lightsear_runtime, "ensure_chromium_alive", lambda: None)
     monkeypatch.setitem(sys.modules, "markdownify", types.SimpleNamespace(markdownify=fake_markdownify))
 
     content = lightsear.web_fetch("https://example.com", mode="markdown", wait=1234)
@@ -66,7 +69,8 @@ def test_web_fetch_text_removes_css_and_js(monkeypatch: pytest.MonkeyPatch):
             value = fn(FakeSession(), *args, **kwargs)
             return FakeFuture(value)
 
-    monkeypatch.setattr(lightsear, "_pool", FakePool())
+    monkeypatch.setattr(lightsear_runtime, "_pool", FakePool())
+    monkeypatch.setattr(lightsear_runtime, "ensure_chromium_alive", lambda: None)
 
     content = lightsear.web_fetch("https://example.com", mode="text")
 
@@ -100,6 +104,11 @@ def test_decode_html_body_prefers_valid_utf8_over_stale_meta_charset():
 
 
 def test_web_fetch_requires_pool_init(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(lightsear, "_pool", None)
+    monkeypatch.setattr(lightsear_runtime, "_pool", None)
     with pytest.raises(RuntimeError, match="initialize_pool"):
         lightsear.web_fetch("https://example.com")
+
+
+def test_fetcher_module_exposes_helpers():
+    assert hasattr(lightsear_fetcher, "_run_web_fetch")
+    assert hasattr(lightsear_fetcher, "_strip_noise_nodes")

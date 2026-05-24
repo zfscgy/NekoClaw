@@ -9,6 +9,7 @@ from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_CONNECTOR
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.lang import MSO_LANGUAGE_ID
 
 # ── 颜色常量 ──────────────────────────────────────────────────────────────────
 WHITE       = RGBColor(0xFF, 0xFF, 0xFF)
@@ -21,8 +22,11 @@ IMG_BG      = RGBColor(0xD6, 0xE4, 0xF0)   # 图片占位区浅蓝灰
 IMG_BORDER  = RGBColor(0x9B, 0xC2, 0xE6)   # 占位区边框蓝
 IMG_TEXT    = RGBColor(0x70, 0x8E, 0xA8)   # 占位符提示文字
 
-# ── 字体 ─────────────────────────────────────────────────────────────────────
+# ── 字体与语言 ────────────────────────────────────────────────────────────────
 FONT = "微软雅黑"
+# 必须为每个 run 设置 language_id，否则 PowerPoint 会按英文进行拼写校对，
+# 导致中文文本出现大量红色波浪线（误报为拼写错误）。
+LANG_ZH = MSO_LANGUAGE_ID.SIMPLIFIED_CHINESE
 
 # ── 幻灯片尺寸（16:9 宽屏）──────────────────────────────────────────────────
 SLIDE_W, SLIDE_H = 13.33, 7.5
@@ -91,6 +95,7 @@ def add_title(slide, text):
     run.font.size = Pt(34)
     run.font.bold = True
     run.font.color.rgb = TITLE_COLOR
+    run.font.language_id = LANG_ZH
 
 
 def add_red_line(slide):
@@ -127,6 +132,7 @@ def add_image_placeholder(slide, left, top, width, height):
     run.font.size = Pt(11)
     run.font.italic = True
     run.font.color.rgb = IMG_TEXT
+    run.font.language_id = LANG_ZH
 
 
 def add_row(slide, left, top, width, height,
@@ -176,6 +182,7 @@ def add_row(slide, left, top, width, height,
     r.font.size = Pt(20)
     r.font.bold = True
     r.font.color.rgb = CARD_TITLE
+    r.font.language_id = LANG_ZH
 
     # 副标题（产品/关键词标签，中等字号）
     p_sub = tf.add_paragraph()
@@ -187,6 +194,7 @@ def add_row(slide, left, top, width, height,
     r_sub.font.size = Pt(16)
     r_sub.font.bold = False
     r_sub.font.color.rgb = RGBColor(0x70, 0x70, 0x70)   # 中灰，区别于正文
+    r_sub.font.language_id = LANG_ZH
 
     # 正文介绍
     p_body = tf.add_paragraph()
@@ -196,6 +204,7 @@ def add_row(slide, left, top, width, height,
     r_body.font.name = FONT
     r_body.font.size = Pt(14)
     r_body.font.color.rgb = CARD_TEXT
+    r_body.font.language_id = LANG_ZH
 
 
 # ─────────────────────────────────────────────────────────────────────────────

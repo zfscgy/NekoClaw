@@ -10,6 +10,7 @@ from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_CONNECTOR
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+from pptx.enum.lang import MSO_LANGUAGE_ID
 
 # ── 颜色常量 ──────────────────────────────────────────────────────────────────
 WHITE       = RGBColor(0xFF, 0xFF, 0xFF)
@@ -23,8 +24,11 @@ IMG_BORDER  = RGBColor(0x9B, 0xC2, 0xE6)   # 占位区边框蓝
 IMG_TEXT    = RGBColor(0x70, 0x8E, 0xA8)   # 占位符提示文字
 ARROW_COLOR = RGBColor(0x1A, 0x56, 0x9A)   # 箭头蓝色（与卡片标题同色系）
 
-# ── 字体 ─────────────────────────────────────────────────────────────────────
+# ── 字体与语言 ────────────────────────────────────────────────────────────────
 FONT = "微软雅黑"
+# 必须为每个 run 设置 language_id，否则 PowerPoint 会按英文进行拼写校对，
+# 导致中文文本出现大量红色波浪线（误报为拼写错误）。
+LANG_ZH = MSO_LANGUAGE_ID.SIMPLIFIED_CHINESE
 
 # ── 幻灯片尺寸（16:9 宽屏）──────────────────────────────────────────────────
 SLIDE_W, SLIDE_H = 13.33, 7.5
@@ -88,6 +92,7 @@ def add_title(slide, text):
     run.font.size = Pt(36)
     run.font.bold = True
     run.font.color.rgb = TITLE_COLOR
+    run.font.language_id = LANG_ZH
 
 
 def add_red_line(slide):
@@ -124,6 +129,7 @@ def add_image_placeholder(slide, left, top, width, height):
     run.font.size = Pt(12)
     run.font.italic = True
     run.font.color.rgb = IMG_TEXT
+    run.font.language_id = LANG_ZH
 
 
 def add_card(slide, left, top, width, height, title_text, body_text):
@@ -174,6 +180,7 @@ def add_card(slide, left, top, width, height, title_text, body_text):
     run_t.font.size = Pt(17)
     run_t.font.bold = True
     run_t.font.color.rgb = CARD_TITLE
+    run_t.font.language_id = LANG_ZH
 
     # 正文段落
     p_body = tf.add_paragraph()
@@ -183,6 +190,7 @@ def add_card(slide, left, top, width, height, title_text, body_text):
     run_b.font.name = FONT
     run_b.font.size = Pt(12)
     run_b.font.color.rgb = CARD_TEXT
+    run_b.font.language_id = LANG_ZH
 
 
 def add_right_arrow(slide, left, top, width, height):

@@ -203,15 +203,11 @@ class PlaywrightCDPSession:
         url: str,
         *,
         wait: int | None = None,
-        network_idle: bool = False,
         wait_selector: str | None = None,
         wait_selector_state: str = "attached",
-        google_search: bool | None = None,  # accepted for compatibility
     ) -> FetchResponse:
         if self._runtime is None:
             raise RuntimeError("Session is not open")
-        del google_search
-        del network_idle
         try:
             return self._runtime.submit(
                 self._runtime.fetch(
