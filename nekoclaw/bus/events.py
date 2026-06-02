@@ -17,10 +17,10 @@ class InboundMessage:
     ``type`` distinguishes the message's origin/intent:
       - ``"user"``       – normal request from a human user (default)
       - ``"subagent"``   – announcement produced by a spawned subagent
-      - ``"user_pause"`` – pause signal from the user; causes the currently
-                           running agent loop for the target session to stop
-                           at the next iteration boundary. Not dispatched as
-                           a regular message.
+
+    Note: pausing/stopping an in-flight turn is handled by calling
+    :meth:`AgentLoop.request_stop` directly (see the NekoChat channel), not via
+    an inbound message.
     """
 
     channel: str  # nekochat/telegram
@@ -31,7 +31,7 @@ class InboundMessage:
     media: list[str] = field(default_factory=list)  # Media URLs
     metadata: dict[str, Any] = field(default_factory=dict)  # Channel-specific data
     session_key_override: str | None = None  # Optional override for thread-scoped sessions
-    type: Literal["user", "subagent", "user_pause"] = "user"
+    type: Literal["user", "subagent"] = "user"
 
     @property
     def session_key(self) -> str:

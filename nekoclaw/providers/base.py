@@ -238,22 +238,91 @@ class StreamDelta:
         return cls(type=dtype, content=raw, media=media, time=data.get("time"))
 
 
-def delta_to_openai(deltas: list[StreamDelta]) -> list[dict[str, Any]]:
+def _strip_images_from_content(content: Any) -> Any:
+    """Replace image parts in a message content payload with a text placeholder.
+
+    Used for models that don't accept image inputs: an ``image_url`` part is
+    swapped for a ``[image]`` text part so the non-vision model still sees that
+    an image was present without receiving (and rejecting) the binary payload.
+    """
+    if not isinstance(content, list):
+        return content
+    out: list[Any] = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "image_url":
+            out.append({"type": "text", "text": "[image]"})
+        else:
+            out.append(part)
+    return out
+
+
+def _active_model_capabilities() -> tuple[bool, bool]:
+    """Return ``(image_input, include_reasoning)`` for the active model.
+
+    Read lazily from the global runtime config so :func:`delta_to_openai` can
+    derive the per-model behavior on its own — callers don't have to thread the
+    flags through the agent loop and subagent manager. The lookup resolves the
+    qualified ``agents.defaults.model`` to its :class:`ModelConfig`. Falls back
+    to ``(True, False)`` (keep images, no reasoning echo) when the config is
+    unavailable, e.g. in isolated unit tests.
+    """
+    try:
+        from nekoclaw.config.manager import get_global_config
+
+        cfg = get_global_config()
+        model = cfg.providers.resolve(cfg.agents.defaults.model).model
+        return model.image_input, model.include_reasoning
+    except Exception:
+        return True, False
+
+
+def delta_to_openai(
+    deltas: list[StreamDelta],
+    *,
+    image_input: bool | None = None,
+    include_reasoning: bool | None = None,
+) -> list[dict[str, Any]]:
     """Convert merged StreamDeltas into OpenAI chat-completion messages.
 
-    Thinking deltas are excluded — they are for UI display only and must
-    not be sent back to the provider.  Consecutive tool-call deltas within
-    a single assistant turn are grouped into one ``assistant`` message.
+    Thinking deltas are normally excluded — they are for UI display only.
+    Consecutive tool-call deltas within a single assistant turn are grouped
+    into one ``assistant`` message.
+
+    The per-model behavior is sourced from the active model's
+    :class:`ModelConfig` (via :func:`_active_model_capabilities`) so callers can
+    simply pass ``deltas``. Both flags may be overridden explicitly (mainly for
+    tests):
+
+    Args:
+        deltas: The merged conversation history.
+        image_input: When ``False`` (the model can't accept images), image
+            parts in user messages are replaced with a ``[image]`` placeholder.
+            ``None`` (default) reads the active model's setting.
+        include_reasoning: When ``True`` (e.g. DeepSeek V4 / Kimi), the
+            assistant's prior thinking is echoed back as ``reasoning_content``
+            on the corresponding assistant message instead of being dropped.
+            ``None`` (default) reads the active model's setting.
     """
+    if image_input is None or include_reasoning is None:
+        cap_image, cap_reasoning = _active_model_capabilities()
+        if image_input is None:
+            image_input = cap_image
+        if include_reasoning is None:
+            include_reasoning = cap_reasoning
+
     messages: list[dict[str, Any]] = []
     content_buf: str | None = None
     tool_calls_buf: list[ToolCallRequest] = []
+    reasoning_buf: str | None = None
 
     def flush_assistant() -> None:
-        nonlocal content_buf, tool_calls_buf
+        nonlocal content_buf, tool_calls_buf, reasoning_buf
         if content_buf is None and not tool_calls_buf:
+            reasoning_buf = None
             return
         msg: dict[str, Any] = {"role": "assistant", "content": content_buf}
+        if include_reasoning and reasoning_buf:
+            msg["reasoning_content"] = reasoning_buf
         if tool_calls_buf:
             msg["tool_calls"] = [
                 {
@@ -269,6 +338,7 @@ def delta_to_openai(deltas: list[StreamDelta]) -> list[dict[str, Any]]:
         messages.append(msg)
         content_buf = None
         tool_calls_buf = []
+        reasoning_buf = None
 
     for delta in deltas:
         if delta.type == "system":
@@ -276,9 +346,11 @@ def delta_to_openai(deltas: list[StreamDelta]) -> list[dict[str, Any]]:
             messages.append({"role": "system", "content": delta.content})
         elif delta.type == "user":
             flush_assistant()
-            messages.append({"role": "user", "content": delta.content})
+            content = delta.content if image_input else _strip_images_from_content(delta.content)
+            messages.append({"role": "user", "content": content})
         elif delta.type == "thinking":
-            pass
+            if include_reasoning and isinstance(delta.content, str) and delta.content.strip():
+                reasoning_buf = delta.content
         elif delta.type == "content":
             content_buf = delta.content
         elif delta.type == "tool_call" and isinstance(delta.content, ToolCallRequest):

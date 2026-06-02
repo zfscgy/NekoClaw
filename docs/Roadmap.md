@@ -11,6 +11,11 @@
 ## Agent
 ### Loop
 - [x] Fetching subagent/user message in inner loop (ReAct loop)
+- [ ] Stop immediately
+- [ ] Context compression
+
+### Configuration
+- [ ] Enable model-specific configuration for sending back reasoning (support deepseek v4/kimi k2.6)
 
 ## Tools
 ### EXEC
@@ -23,7 +28,7 @@
 ### Web
 - [x] Chrome portable support
 - [x] Handling the case when browser is closed by user
-- [ ] WebSearch engine selection config
+- [x] WebSearch engine selection config
 
 ## Installation
 - [x] Windows installation by AutoCython + Pyinstaller

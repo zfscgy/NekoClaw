@@ -106,6 +106,9 @@ def load_config(config_path: Path | None = None) -> Config:
                     except (json.JSONDecodeError, ValueError) as e:
                         print(f"Warning: Failed to load {key} from {sidecar_path}: {e}")
 
+            if "providers" in data:
+                data["providers"] = _migrate_providers(data["providers"])
+
             return Config.model_validate(data)
         except (json.JSONDecodeError, ValueError) as e:
             print(f"Warning: Failed to load config from {path}: {e}")
@@ -151,8 +154,8 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     persist the result to disk.
 
     Keys collected (in this order):
-    - OpenAI API base URL (``providers.openai.api_base``)
-    - OpenAI API key      (``providers.openai.api_key``)
+    - OpenAI API base URL (active provider's ``api_base``)
+    - OpenAI API key      (active provider's ``api_key``)
     - Default model       (``agents.defaults.model``)
     - Template locale     (``agents.defaults.template_locale`` — ``en`` or ``cn``)
 
@@ -178,7 +181,13 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     console.print("[dim]按 Enter 即可保留当前的值喵～[/dim]\n")
 
     console.print("[bold]OpenAI 服务设置喵[/bold]")
-    openai = cfg.providers.openai
+    # Configure the provider that serves the currently-selected default model
+    # (falling back to a provider named "default" when none is set yet).
+    provider_name = cfg.providers.resolve(cfg.agents.defaults.model).provider_name
+    openai = cfg.providers.openai.get(provider_name)
+    if openai is None:
+        openai = ProviderConfig()
+        cfg.providers.openai[provider_name] = openai
 
     previous_base = openai.api_base
     new_base = Prompt.ask(
@@ -190,13 +199,13 @@ def prompt_configs(config_path: Path | None = None) -> Config:
 
     # If the base URL just changed (or the list was never populated) re-derive
     # the curated suggestions for the new host, then promote the first
-    # recommended model id as the default — the schema-level fallback
-    # ("gpt-5.4") usually isn't reachable through provider-specific gateways.
-    if openai.api_base != previous_base or not openai.recommended_models:
+    # recommended model id as the qualified default — the schema-level fallback
+    # ("default/gpt-5.4") usually isn't reachable through provider gateways.
+    if openai.api_base != previous_base or not openai.models:
         inferred = ProviderConfig.infer_models(openai.api_base)
         if inferred:
-            openai.recommended_models = inferred
-            cfg.agents.defaults.model = inferred[0]
+            openai.models = inferred
+            cfg.agents.defaults.model = f"{provider_name}/{inferred[0].id}"
 
     current_key = openai.api_key
     new_key = Prompt.ask(
@@ -237,3 +246,57 @@ def _migrate_config(data: dict) -> dict:
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
     return data
+
+
+# Keys that mark an ``openai`` object as a single (legacy) provider config
+# rather than a mapping of named providers.
+_PROVIDER_FIELD_KEYS = frozenset(
+    {
+        "api_key", "apiKey",
+        "api_base", "apiBase",
+        "extra_headers", "extraHeaders",
+        "recommended_models", "recommendedModels",
+        "models",
+    }
+)
+
+
+def _migrate_provider_entry(prov: dict) -> None:
+    """Convert a legacy ``recommended_models`` string list to ``models`` objects."""
+    if not isinstance(prov, dict) or "models" in prov:
+        return
+    legacy = prov.pop("recommended_models", None)
+    if legacy is None:
+        legacy = prov.pop("recommendedModels", None)
+    if isinstance(legacy, list):
+        prov["models"] = [
+            {"id": m} if isinstance(m, str) else m
+            for m in legacy
+            if isinstance(m, (str, dict))
+        ]
+
+
+def _migrate_providers(providers: dict) -> dict:
+    """Migrate the providers section to the named-provider mapping format.
+
+    Older installs stored ``providers.openai`` as a single provider config
+    (``{"apiKey": ..., "recommendedModels": [...]}``). The current schema keys
+    providers by a unique name, so a legacy single config is wrapped under a
+    ``"default"`` provider. Each provider's ``recommended_models`` string list
+    is also upgraded to ``models`` objects carrying capability flags.
+    """
+    if not isinstance(providers, dict):
+        return providers
+    openai = providers.get("openai")
+    if not isinstance(openai, dict):
+        return providers
+
+    # A legacy single provider config carries provider field keys directly;
+    # a new mapping has arbitrary provider names as keys instead.
+    if any(k in openai for k in _PROVIDER_FIELD_KEYS):
+        openai = {"default": openai}
+        providers["openai"] = openai
+
+    for prov in openai.values():
+        _migrate_provider_entry(prov)
+    return providers

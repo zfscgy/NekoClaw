@@ -305,9 +305,38 @@ NekoClaw 的配置是 **「`config.json` + 三个 sidecar」** 的四文件结�
 | 文件             | 内容                                                                                 |
 | ---------------- | ------------------------------------------------------------------------------------ |
 | `config.json`    | `agents.defaults`（模型、温度、memory window 等）+ `gateway`（heartbeat）             |
-| `providers.json` | `openai.api_key` / `api_base` / `extra_headers` / `recommended_models`               |
+| `providers.json` | `openai.<名称>`（多个具名 provider）：`api_key` / `api_base` / `extra_headers` / `models`（每个模型含 `id` / `image_input` / `include_reasoning`） |
 | `channels.json`  | `telegram` / `qq` / `nekochat` 三个通道的开关与凭据                                   |
 | `tools.json`     | `tools.web`（Playwright / 便携 Chrome / Lightsear 搜索引擎开关）、`tools.exec`、MCP servers、`restrictToWorkspace` |
+
+`providers.json` 支持配置**多个具名 OpenAI 兼容服务**，每个服务名唯一，下面各自列出
+模型及其能力开关。`agents.defaults.model` 用 `服务名/模型id` 的形式选定当前模型
+（例如 `default/gpt-5.4` 或 `openrouter/openai/gpt-5.5`，按第一个 `/` 切分，所以模型 id
+里再带 `/` 也没问题）：
+
+```jsonc
+{
+  "openai": {
+    "default": {
+      "apiKey": "sk-...",
+      "apiBase": "https://api.openai.com/v1",
+      "models": [
+        { "id": "gpt-5.4", "imageInput": true, "includeReasoning": false }
+      ]
+    },
+    "deepseek": {
+      "apiKey": "sk-...",
+      "apiBase": "https://api.deepseek.com/v1",
+      "models": [
+        { "id": "deepseek-v4", "imageInput": false, "includeReasoning": true }
+      ]
+    }
+  }
+}
+```
+
+- `imageInput`：模型是否接受图片输入。为 `false` 时图片会被替换成 `[image]` 文本占位，避免非视觉模型报错
+- `includeReasoning`：是否把模型自己上一轮的思考（`reasoning_content`）回传给它。DeepSeek V4、Kimi 等需要开启
 
 其它说明：
 

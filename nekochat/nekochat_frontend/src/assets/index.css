@@ -1276,9 +1276,15 @@ html.light .msg-bubble pre code {
 
 .config-section {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 10px 12px;
 }
+
+/* By default every field spans the full row; boolean fields shrink so several
+   checkboxes pack into a compact grid that wraps. */
+.config-section > .config-node { flex: 1 1 100%; min-width: 0; }
+.config-section > .config-node--bool { flex: 1 1 200px; }
 
 .config-section-title {
   font-size: 13px;
@@ -1297,6 +1303,32 @@ html.light .msg-bubble pre code {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+/* Primitive fields (string/number/enum) put the label and input on one row:
+   "label: [input]". The description, if any, wraps onto its own line below. */
+label.config-field:not(.config-field-inline) {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+label.config-field:not(.config-field-inline) > .config-label {
+  flex: 0 0 auto;
+  max-width: 45%;
+  order: 0;
+}
+label.config-field:not(.config-field-inline) > .config-label::after {
+  content: ':';
+}
+label.config-field:not(.config-field-inline) > .config-input {
+  flex: 1 1 200px;
+  min-width: 0;
+  order: 1;
+}
+label.config-field:not(.config-field-inline) > .config-hint {
+  flex: 1 1 100%;
+  order: 2;
 }
 
 .config-label {
@@ -1389,7 +1421,17 @@ html.light .msg-bubble pre code {
   padding: 18px 22px 4px;
   overflow-y: auto;
   min-width: 0;
+  --list-accent: var(--accent);
 }
+
+/* Each top-level card cycles through a distinct accent color so adjacent
+   top-level lists are easy to tell apart. */
+.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+1) { --list-accent: #c07090; }
+.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+2) { --list-accent: #6f9bd0; }
+.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+3) { --list-accent: #5fb89a; }
+.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+4) { --list-accent: #c9a45f; }
+.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+5) { --list-accent: #a78bd0; }
+.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+6) { --list-accent: #cf7f6f; }
 
 .config-node { display: block; }
 .config-node.is-root { display: block; }
@@ -1412,27 +1454,42 @@ html.light .msg-bubble pre code {
 }
 
 .config-pane > .config-node.is-root > .config-section > .config-node {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--list-accent) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--list-accent) 28%, var(--border));
   border-radius: var(--radius-sm);
   padding: 14px 16px;
 }
 
-.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(even) {
-  background: var(--surface2);
-}
-
 html.light .config-pane > .config-node.is-root > .config-section > .config-node {
-  background: #ffffff;
-}
-html.light .config-pane > .config-node.is-root > .config-section > .config-node:nth-child(even) {
-  background: #f4f4f4;
+  background: color-mix(in srgb, var(--list-accent) 12%, #ffffff);
+  border-color: color-mix(in srgb, var(--list-accent) 30%, var(--border));
 }
 
 .config-field-inline {
   flex-direction: row;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
+}
+
+/* Compact bordered cell so booleans read as grid items, not full-width rows */
+.config-node--bool .config-field-inline {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  height: 100%;
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+.config-node--bool .config-field-inline:hover { border-color: var(--accent); }
+html.light .config-node--bool .config-field-inline { background: #f4f4f4; }
+
+/* A boolean that is itself a top-level card already has its own frame —
+   don't draw a second box inside it. */
+.config-pane > .config-node.is-root > .config-section > .config-node--bool .config-field-inline {
+  background: transparent;
+  border: none;
+  padding: 0;
 }
 
 .config-label-inline {
@@ -1441,12 +1498,17 @@ html.light .config-pane > .config-node.is-root > .config-section > .config-node:
   letter-spacing: 0;
   color: var(--text);
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .config-hint-inline {
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--text-muted);
   margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .config-map-header {
@@ -1478,7 +1540,7 @@ html.light .config-pane > .config-node.is-root > .config-section > .config-node:
 
 .config-map-entry {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-sm);
   padding: 10px 12px;
   display: flex;
@@ -1506,7 +1568,7 @@ html.light .config-pane > .config-node.is-root > .config-section > .config-node:
 
 .config-map-value-nested {
   padding: 4px 0 0 6px;
-  border-left: 2px solid var(--border);
+  border-left: none;
   margin-left: 2px;
 }
 
@@ -1521,6 +1583,114 @@ html.light .config-pane > .config-node.is-root > .config-section > .config-node:
   grid-template-columns: 1fr auto;
   gap: 6px;
   align-items: center;
+}
+
+/* Shared header for list-like fields (arrays + maps) */
+.config-list-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.config-list-spacer { flex: 1; }
+
+.config-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* Cards for arrays of objects (e.g. provider models) */
+.config-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.config-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+html.light .config-card { background: #ffffff; }
+
+.config-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.config-card-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+
+/* ── List level emphasis + zebra item backgrounds ─────────────────── */
+
+/* Zebra striping so adjacent items are visually distinct */
+.config-card-list > .config-card:nth-child(odd),
+.config-map-list > .config-map-entry:nth-child(odd) { background: var(--surface); }
+.config-card-list > .config-card:nth-child(even),
+.config-map-list > .config-map-entry:nth-child(even) { background: var(--surface2); }
+html.light .config-card-list > .config-card:nth-child(odd),
+html.light .config-map-list > .config-map-entry:nth-child(odd) { background: #ffffff; }
+html.light .config-card-list > .config-card:nth-child(even),
+html.light .config-map-list > .config-map-entry:nth-child(even) { background: #f4f4f4; }
+
+/* Top-level lists (directly under a tab) are emphasized, each with its own
+   accent color (see --list-accent assigned per top-level card above). */
+.config-list--top > .config-list-header .config-label {
+  font-size: 12px;
+  color: var(--list-accent);
+}
+.config-list--top > .config-list-header .config-count {
+  background: color-mix(in srgb, var(--list-accent) 16%, transparent);
+  border-color: var(--list-accent);
+  color: var(--list-accent);
+}
+.config-list--top > .config-card-list > .config-card,
+.config-list--top > .config-map-list > .config-map-entry {
+  border-left: 3px solid var(--list-accent);
+  padding-left: 12px;
+}
+
+/* Nested lists read more quietly: no borders, and each nesting level adds a
+   translucent overlay so deeper lists differ from their parent by lightness. */
+.config-list--nested > .config-list-header .config-label {
+  color: var(--text-muted);
+}
+.config-list--nested .config-card-list > .config-card,
+.config-list--nested .config-map-list > .config-map-entry {
+  border: none;
+  border-left: none;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+html.light .config-list--nested .config-card-list > .config-card,
+html.light .config-list--nested .config-map-list > .config-map-entry {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
 }
 
 @media (max-width: 640px) {

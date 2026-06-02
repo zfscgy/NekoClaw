@@ -200,7 +200,13 @@ class AgentLoopDispatcher:
         active loop, see the new values.
         """
         d = new_cfg.agents.defaults
-        self.model = d.model
+        # The stored model is qualified (``providerName/modelId``); resolve it
+        # to the bare model id passed to the provider. Per-model capability
+        # flags (image_input / include_reasoning) are not threaded here — they
+        # are read from the active config by ``delta_to_openai`` at call time.
+        model_id = new_cfg.providers.resolve(d.model).model_id
+
+        self.model = model_id
         self.temperature = d.temperature
         self.max_tokens = d.max_tokens
         self.max_iterations = d.max_tool_iterations
@@ -211,7 +217,7 @@ class AgentLoopDispatcher:
             loops = list(self._loops.values())
 
         for loop in loops:
-            loop.model = d.model
+            loop.model = model_id
             loop.temperature = d.temperature
             loop.max_tokens = d.max_tokens
             loop.max_iterations = d.max_tool_iterations
@@ -219,7 +225,7 @@ class AgentLoopDispatcher:
             loop.reasoning_effort = d.reasoning_effort
             sub = getattr(loop, "subagents", None)
             if sub is not None:
-                sub.model = d.model
+                sub.model = model_id
                 sub.temperature = d.temperature
                 sub.max_tokens = d.max_tokens
                 sub.reasoning_effort = d.reasoning_effort

@@ -59,16 +59,24 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 
 const PLACEHOLDER = 'Model id…'
 
+interface ModelShape {
+  id: string
+  image_input?: boolean
+  imageInput?: boolean
+  include_reasoning?: boolean
+  includeReasoning?: boolean
+}
+
 interface ProviderShape {
-  recommended_models?: string[]
-  recommendedModels?: string[]
+  models?: ModelShape[]
   api_base?: string | null
   apiBase?: string | null
 }
 
 interface ConfigShape {
   agents?: { defaults?: { model?: string } }
-  providers?: Record<string, ProviderShape>
+  // ``providers.openai`` is a map of unique provider name → provider config.
+  providers?: { openai?: Record<string, ProviderShape> }
 }
 
 const placeholder = PLACEHOLDER
@@ -104,12 +112,18 @@ async function load(): Promise<void> {
     const cfg = data.config || {}
     current.value = cfg.agents?.defaults?.model || ''
     draft.value = current.value
+    // Build qualified ``providerName/modelId`` ids so the selected value names
+    // both the provider and the model it belongs to.
     const merged: string[] = []
     const seen = new Set<string>()
-    for (const prov of Object.values(cfg.providers || {})) {
-      const list = prov?.recommended_models ?? prov?.recommendedModels ?? []
+    const openai = cfg.providers?.openai || {}
+    for (const [name, prov] of Object.entries(openai)) {
+      const list = prov?.models ?? []
       for (const m of list) {
-        if (m && !seen.has(m)) { seen.add(m); merged.push(m) }
+        const id = m?.id
+        if (!id) continue
+        const qualified = `${name}/${id}`
+        if (!seen.has(qualified)) { seen.add(qualified); merged.push(qualified) }
       }
     }
     recommended.value = merged

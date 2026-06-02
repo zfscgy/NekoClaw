@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
 import traceback
@@ -105,13 +106,24 @@ class AgentLoop:
         # its event loop in ``_async_main``.  They are ``None`` until then.
         self._processing_lock: asyncio.Lock | None = None
         self._consolidation_lock: asyncio.Lock | None = None
+        # Main work queue: every inbound message for this session lands here
+        # and is consumed solely by ``run()``, which starts a new turn (or
+        # queues one behind ``_processing_lock`` if a turn is already running).
         self._inbox: asyncio.Queue[InboundMessage] | None = None
+        # In-flight injection queue: only present while a turn is actively
+        # processing. ``run()`` diverts user/subagent messages that arrive
+        # mid-turn here so ``_run_agent_loop`` can fold them into the running
+        # turn at the next iteration boundary instead of waiting for it to end.
         self._inflight_inbox: asyncio.Queue[InboundMessage] | None = None
         self._consolidating: bool = False
         self._consolidation_tasks: set[asyncio.Task] = set()
         # ``True`` while the user has asked the currently-running iteration to
         # stop at the next iteration boundary.  Cleared by the loop itself.
         self._pause_requested: bool = False
+        # Set (cross-thread) by ``request_stop`` so an in-flight stream can be
+        # aborted immediately instead of waiting for the next chunk to arrive.
+        # Created on the worker's event loop in ``_async_main``.
+        self._stop_event: asyncio.Event | None = None
 
         # Cross-thread plumbing
         self._event_loop: asyncio.AbstractEventLoop | None = None
@@ -165,6 +177,7 @@ class AgentLoop:
         self._inbox = asyncio.Queue()
         self._processing_lock = asyncio.Lock()
         self._consolidation_lock = asyncio.Lock()
+        self._stop_event = asyncio.Event()
 
         # Drain anything that arrived before the event loop was ready.
         with self._pending_inbox_lock:
@@ -388,6 +401,55 @@ class AgentLoop:
     # Core processing
     # ------------------------------------------------------------------ #
 
+    async def _iter_stoppable(self, agen):
+        """Yield deltas from *agen*, aborting the instant a stop is requested.
+
+        Each ``__anext__`` is raced against :attr:`_stop_event`.  When the stop
+        event wins (i.e. while still waiting for the provider's next chunk), the
+        pending fetch is cancelled and the source generator is closed, which
+        tears down the underlying HTTP stream immediately instead of waiting for
+        the next token to arrive.
+        """
+        aiter = agen.__aiter__()
+        stop_event = self._stop_event
+        # A single long-lived waiter is reused across chunks to avoid spawning
+        # a task per token.
+        stop_task = (
+            asyncio.ensure_future(stop_event.wait()) if stop_event is not None else None
+        )
+        try:
+            while True:
+                if stop_event is not None and stop_event.is_set():
+                    return
+                next_chunk_task = asyncio.ensure_future(aiter.__anext__())
+                wait_tasks: set = {next_chunk_task}
+                if stop_task is not None:
+                    wait_tasks.add(stop_task)
+
+                done, _ = await asyncio.wait(
+                    wait_tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+
+                if next_chunk_task in done:
+                    try:
+                        yield next_chunk_task.result()
+                    except StopAsyncIteration:
+                        return
+                    continue
+
+                # Stop requested before the next chunk arrived: abort the fetch.
+                next_chunk_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await next_chunk_task
+                return
+        finally:
+            if stop_task is not None:
+                stop_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await stop_task
+            with contextlib.suppress(Exception):
+                await aiter.aclose()
+
     async def _run_agent_loop(
         self,
         channel: str,
@@ -411,6 +473,8 @@ class AgentLoop:
         while iteration < self.max_iterations:
             if self._pause_requested:
                 self._pause_requested = False
+                if self._stop_event is not None:
+                    self._stop_event.clear()
                 logger.info("Agent loop paused by user for session {}", session.key)
                 if final_content is None:
                     final_content = "Paused by user."
@@ -469,8 +533,17 @@ class AgentLoop:
             content_chunks: list[str] = []
             thinking_chunks: list[str] = []
             response_tool_calls: list[ToolCallRequest] = []
+            stopped_mid_stream = False
 
-            async for delta in _iter_effective_deltas(openai_messages, tools_arg):
+            if self._stop_event is not None:
+                self._stop_event.clear()
+
+            stream_source = _iter_effective_deltas(openai_messages, tools_arg)
+            async for delta in self._iter_stoppable(stream_source):
+                if not self._running or self._pause_requested:
+                    stopped_mid_stream = True
+                    break
+
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=channel, chat_id=chat_id,
                     type="delta", msg=delta,
@@ -493,11 +566,51 @@ class AgentLoop:
                 if isinstance(tc, ToolCallRequest) and not tc.partial:
                     response_tool_calls.append(tc)
 
+            # ``_iter_stoppable`` returns early (no break) when the stream is
+            # aborted while waiting on the next chunk, so detect that here too.
+            if not self._running or self._pause_requested:
+                stopped_mid_stream = True
+            if stopped_mid_stream:
+                self._pause_requested = False
+                if self._stop_event is not None:
+                    self._stop_event.clear()
+                logger.info(
+                    "Agent loop stopped mid-stream for session {}", session.key
+                )
+
             response_content = "".join(content_chunks) if content_chunks else None
             response_thinking = "".join(thinking_chunks).strip() or None
 
             if response_thinking:
                 messages.append(StreamDelta(type="thinking", content=response_thinking))
+
+            if stopped_mid_stream:
+                # Treat whatever streamed so far as a finished response: store
+                # the partial content and any tool calls (without executing
+                # them), then break out of the agent loop.
+                if response_content:
+                    messages.append(StreamDelta(
+                        type="content",
+                        content=response_content,
+                        time=datetime.now(timezone.utc).isoformat(),
+                    ))
+                if response_tool_calls:
+                    for tc in response_tool_calls:
+                        messages.append(StreamDelta(type="tool_call", content=tc))
+                    messages.append(StreamDelta(
+                        type="tool_call_results",
+                        content=[
+                            ToolCallResult(
+                                tool_call_id=tc.id,
+                                name=tc.name,
+                                content="User paused, no tool call results",
+                            )
+                            for tc in response_tool_calls
+                        ],
+                        time=datetime.now(timezone.utc).isoformat(),
+                    ))
+                final_content = response_content
+                break
 
             if response_tool_calls:
                 if response_content:
@@ -591,13 +704,6 @@ class AgentLoop:
             except asyncio.TimeoutError:
                 continue
 
-            if msg.type == "user_pause":
-                # Flag the currently-running ``_run_agent_loop`` to exit at
-                # its next iteration boundary.  Does not start a new task.
-                self._pause_requested = True
-                logger.info("Pause requested for session {}", self.session.key)
-                continue
-
             # If an agent loop is already running, route regular user
             # messages and subagent announcements to its in-flight inbox so
             # they can be picked up at the next iteration boundary instead of
@@ -638,6 +744,23 @@ class AgentLoop:
         """Stop the agent loop."""
         self._running = False
         logger.info("Agent loop stopping for session {}", self.session.key)
+
+    def request_stop(self) -> None:
+        """Interrupt the in-flight turn as soon as possible.
+
+        Thread-safe: may be called from any thread (e.g. a channel's web
+        handler). Sets the pause flag that ``_run_agent_loop`` checks on every
+        streamed delta, and wakes the ``_stop_event`` so an in-flight provider
+        stream is aborted immediately (closing the HTTP connection) instead of
+        blocking until the next chunk arrives. Unlike :meth:`stop`, the worker
+        thread keeps running so the conversation can continue afterwards.
+        """
+        self._pause_requested = True
+        loop = self._event_loop
+        event = self._stop_event
+        if loop is not None and event is not None and loop.is_running():
+            loop.call_soon_threadsafe(event.set)
+        logger.info("Stop requested for in-flight turn of session {}", self.session.key)
 
     async def _process_message(self, msg: InboundMessage) -> str:
         """Process a single inbound message. Returns the final text content."""

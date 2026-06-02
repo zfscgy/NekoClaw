@@ -1,9 +1,9 @@
 <template>
-  <div class="config-node" :class="{ 'is-root': depth === 0 }">
+  <div class="config-node" :class="{ 'is-root': depth === 0, 'config-node--bool': kind === 'boolean' }">
     <!-- Object: render each property inline -->
     <template v-if="kind === 'object'">
-      <h3 v-if="depth > 0" class="config-sub-title">{{ label }}</h3>
-      <p v-if="description" class="config-hint">{{ description }}</p>
+      <h3 v-if="depth > 0 && !hideLabel" class="config-sub-title">{{ label }}</h3>
+      <p v-if="description && !hideLabel" class="config-hint">{{ description }}</p>
 
       <div class="config-section">
         <ConfigNode
@@ -21,8 +21,11 @@
 
     <!-- Dynamic map: key → value (primitive or object) -->
     <template v-else-if="kind === 'map'">
-      <div class="config-map-header">
+      <div class="config-list" :class="listLevelClass">
+      <div class="config-list-header">
         <span class="config-label">{{ label }}</span>
+        <span v-if="mapEntries.length" class="config-count">{{ mapEntries.length }}</span>
+        <span class="config-list-spacer"></span>
         <button type="button" class="btn-secondary btn-mini" @click="addMapEntry">＋ Add</button>
       </div>
       <p v-if="description" class="config-hint">{{ description }}</p>
@@ -68,20 +71,58 @@
               :value="entry.value"
               :full-schema="fullSchema"
               :depth="depth + 1"
+              :hide-label="true"
               @update="(p, v) => bubble(p, v)"
             />
           </div>
         </div>
       </div>
+      </div>
     </template>
 
-    <!-- Array of primitives -->
+    <!-- Array (of primitives or objects) -->
     <template v-else-if="kind === 'array'">
-      <label class="config-field">
-        <span v-if="!hideLabel" class="config-label">{{ label }}</span>
+      <div class="config-field config-list" :class="listLevelClass">
+        <div class="config-list-header">
+          <span v-if="!hideLabel" class="config-label">{{ label }}</span>
+          <span v-if="arrayValue.length" class="config-count">{{ arrayValue.length }}</span>
+          <span class="config-list-spacer"></span>
+          <button type="button" class="btn-secondary btn-mini" @click="addArrayItem">＋ Add</button>
+        </div>
         <p v-if="description" class="config-hint">{{ description }}</p>
 
-        <div class="config-array-list">
+        <!-- Array of objects: render each item as a titled card -->
+        <div v-if="arrayItemIsObject" class="config-card-list">
+          <div v-if="arrayValue.length === 0" class="config-empty">No entries yet.</div>
+          <div
+            v-for="(_, i) in arrayValue"
+            :key="i"
+            class="config-card"
+          >
+            <div class="config-card-head">
+              <span class="config-card-title">{{ itemTitle(i) }}</span>
+              <button
+                type="button"
+                class="btn-icon"
+                title="Remove"
+                @click="removeArrayItem(i)"
+              >✕</button>
+            </div>
+            <ConfigNode
+              :path="`${path}.${i}`"
+              :schema="arrayItemSchema"
+              :value="arrayValue[i]"
+              :full-schema="fullSchema"
+              :depth="depth + 1"
+              :hide-label="true"
+              @update="bubble"
+            />
+          </div>
+        </div>
+
+        <!-- Array of primitives -->
+        <div v-else class="config-array-list">
+          <div v-if="arrayValue.length === 0" class="config-empty">No entries yet.</div>
           <div
             v-for="(_, i) in arrayValue"
             :key="i"
@@ -100,11 +141,8 @@
               @click="removeArrayItem(i)"
             >✕</button>
           </div>
-          <button type="button" class="btn-secondary btn-mini" @click="addArrayItem">
-            ＋ Add
-          </button>
         </div>
-      </label>
+      </div>
     </template>
 
     <!-- Boolean checkbox -->
@@ -368,18 +406,48 @@ function updateMapValue(key: string, value: Json): void {
 // ─── array ─────────────────────────────────────────────────────────────
 const arrayValue = computed<Json[]>(() => Array.isArray(props.value) ? props.value as Json[] : [])
 
+// Top-level lists (directly under a tab) are emphasized; nested lists are
+// rendered more subtly so the hierarchy reads clearly.
+const listLevelClass = computed(() =>
+  props.depth <= 1 ? 'config-list--top' : 'config-list--nested'
+)
+
+const arrayItemSchema = computed<SchemaNode>(() =>
+  flattenSchema(effectiveSchema.value.items ?? { type: 'string' })
+)
+
+const arrayItemIsObject = computed(() => {
+  const s = arrayItemSchema.value
+  const t = Array.isArray(s.type) ? s.type.find((x) => x !== 'null') : s.type
+  return t === 'object' || !!s.properties
+})
+
 const arrayInputType = computed(() => {
-  const itemType = effectiveSchema.value.items?.type
+  const itemType = arrayItemSchema.value.type
   if (itemType === 'integer' || itemType === 'number') return 'number'
   return 'text'
 })
+
+/** Pick a readable heading for an object array item. */
+function itemTitle(i: number): string {
+  const item = arrayValue.value[i]
+  if (item && typeof item === 'object' && !Array.isArray(item)) {
+    const rec = item as Record<string, Json>
+    for (const key of ['id', 'name', 'title']) {
+      const v = rec[key]
+      if (typeof v === 'string' && v.trim()) return v
+    }
+  }
+  const t = arrayItemSchema.value.title
+  return `${t ? stripConfigSuffix(t) : 'Item'} ${i + 1}`
+}
 
 function emitArrayUpdate(next: Json[]): void {
   emit('update', props.path, next)
 }
 
 function updateArrayItem(i: number, raw: string): void {
-  const itemType = effectiveSchema.value.items?.type
+  const itemType = arrayItemSchema.value.type
   const next = arrayValue.value.slice()
   if (itemType === 'integer') next[i] = parseInt(raw || '0', 10) || 0
   else if (itemType === 'number') next[i] = parseFloat(raw || '0') || 0
@@ -389,7 +457,7 @@ function updateArrayItem(i: number, raw: string): void {
 
 function addArrayItem(): void {
   const next = arrayValue.value.slice()
-  next.push(defaultValueForSchema(effectiveSchema.value.items ?? { type: 'string' }))
+  next.push(defaultValueForSchema(arrayItemSchema.value))
   emitArrayUpdate(next)
 }
 

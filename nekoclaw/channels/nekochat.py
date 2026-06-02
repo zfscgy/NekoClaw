@@ -1053,15 +1053,22 @@ class NekoChatChannel(BaseChannel):
         )
 
     async def _request_stop(self, conversation_id: str) -> None:
-        """Ask the agent loop to stop the current turn at the next boundary."""
-        await self.bus.publish_inbound(InboundMessage(
-            channel=self.name,
-            sender_id="user",
-            chat_id=conversation_id,
-            content="",
-            metadata={"conversation_id": conversation_id, "_stop": True},
-            type="user_pause",
-        ))
+        """Stop the in-flight turn immediately.
+
+        Resolves the per-session :class:`AgentLoop` from the running dispatcher
+        and calls its stop method directly so generation is interrupted
+        mid-stream. When a turn is generating, its loop always exists, so there
+        is nothing to stop if no loop is found.
+        """
+        from nekoclaw.config.manager import get_agent
+
+        session_key = f"{self.name}:{conversation_id}"
+        agent = get_agent()
+        loop = agent.get_loop(session_key) if agent is not None else None
+        if loop is not None:
+            loop.request_stop()
+        else:
+            logger.debug("No active agent loop for {} — nothing to stop", session_key)
 
     # ------------------------------------------------------------------
     # WebSocket handler
@@ -1215,7 +1222,7 @@ class NekoChatChannel(BaseChannel):
     async def _handle_get_config(self, request: Any) -> Any:
         """Return the full runtime config dict and its JSON schema.
 
-        ``?key=providers.openai.api_key`` returns only that value.
+        ``?key=providers.openai.default.api_key`` returns only that value.
         """
         from nekoclaw.config.manager import to_dict as cfg_get
         from nekoclaw.config.manager import schema as cfg_schema

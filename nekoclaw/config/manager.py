@@ -6,7 +6,7 @@ heartbeat) so the NekoChat config panel can mutate any field, persist it to
 disk, and apply the change to running components without a restart.
 
 Exposes a generic :func:`to_dict` / :func:`set_key` API that walks the active
-config via dot-path keys (e.g. ``providers.openai.api_key``) and a
+config via dot-path keys (e.g. ``providers.openai.default.api_key``) and a
 :func:`schema` helper that returns the resolved Pydantic JSON schema, so any
 new field added to :mod:`nekoclaw.config.schema` appears automatically in the
 frontend.
@@ -233,13 +233,16 @@ def _apply_provider_live(new_cfg: Config) -> None:
     reconfigure = getattr(provider, "reconfigure", None)
     if not callable(reconfigure):
         return
-    p = new_cfg.providers.openai
+    # Resolve the qualified default model to the owning provider's credentials
+    # and the bare model id so switching models can also switch providers.
+    resolved = new_cfg.providers.resolve(new_cfg.agents.defaults.model)
+    p = resolved.provider
     try:
         reconfigure(
             api_key=p.api_key,
             api_base=p.api_base,
             extra_headers=p.extra_headers or {},
-            default_model=new_cfg.agents.defaults.model,
+            default_model=resolved.model_id,
         )
         logger.info("Live provider reconfigured")
     except Exception as exc:  # pragma: no cover - defensive
@@ -266,7 +269,8 @@ def _apply_agent_live(new_cfg: Config) -> None:
             return
 
         d = new_cfg.agents.defaults
-        agent.model = d.model
+        model_id = new_cfg.providers.resolve(d.model).model_id
+        agent.model = model_id
         agent.temperature = d.temperature
         agent.max_tokens = d.max_tokens
         agent.max_iterations = d.max_tool_iterations
@@ -275,7 +279,7 @@ def _apply_agent_live(new_cfg: Config) -> None:
 
         subagents = getattr(agent, "subagents", None)
         if subagents is not None:
-            subagents.model = d.model
+            subagents.model = model_id
             subagents.temperature = d.temperature
             subagents.max_tokens = d.max_tokens
             subagents.reasoning_effort = d.reasoning_effort
@@ -293,7 +297,7 @@ def _apply_heartbeat_live(new_cfg: Config) -> None:
 
     hb_cfg = new_cfg.gateway.heartbeat
     try:
-        heartbeat.model = new_cfg.agents.defaults.model
+        heartbeat.model = new_cfg.providers.resolve(new_cfg.agents.defaults.model).model_id
         heartbeat.interval_s = hb_cfg.interval_s
         heartbeat.enabled = hb_cfg.enabled
         logger.info("Live heartbeat settings reconfigured")

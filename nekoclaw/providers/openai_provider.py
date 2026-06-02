@@ -1,5 +1,6 @@
 """OpenAI provider implementation using the official OpenAI Python SDK."""
 
+import contextlib
 import secrets
 import string
 from typing import Any, AsyncIterator
@@ -12,7 +13,9 @@ from openai import AsyncOpenAI
 from nekoclaw.providers.base import LLMProvider, StreamDelta, ToolCallRequest, build_stream_deltas
 from nekoclaw.providers.delta_buffer import DeltaBuffer
 
-_ALLOWED_MSG_KEYS = frozenset({"role", "content", "tool_calls", "tool_call_id", "name"})
+_ALLOWED_MSG_KEYS = frozenset(
+    {"role", "content", "tool_calls", "tool_call_id", "name", "reasoning_content"}
+)
 _ALNUM = string.ascii_letters + string.digits
 _UNSET = object()
 
@@ -182,6 +185,7 @@ class OpenAIProvider(LLMProvider):
         accumulated: dict[int, dict[str, str]] = {}
         finalized: set[int] = set()
 
+        stream = None
         try:
             stream = await self._client.chat.completions.create(**kwargs)
             async for chunk in stream:
@@ -250,6 +254,15 @@ class OpenAIProvider(LLMProvider):
         except Exception as e:
             logger.warning("Streaming failed, no tokens yielded: {}", e)
             yield StreamDelta(type="content", content=f"Error: {e}")
+        finally:
+            # Ensure the underlying HTTP connection is released promptly when
+            # the consumer aborts the stream (e.g. user pause), not just on
+            # normal completion.
+            if stream is not None:
+                closer = getattr(stream, "close", None) or getattr(stream, "aclose", None)
+                if closer is not None:
+                    with contextlib.suppress(Exception):
+                        await closer()
 
     async def chat_stream(
         self,

@@ -72,7 +72,7 @@ The `OpenAIProvider` translates the raw OpenAI SDK streaming chunks into `Stream
 
 A `DeltaBuffer` sits between the raw stream and the caller. It merges consecutive same-type `thinking` and `content` chunks within a 1-second window, reducing the number of downstream events without losing any content.
 
-Before calling the provider, the agent converts the internal `list[StreamDelta]` to OpenAI's wire format using `delta_to_openai()`. `thinking` deltas are silently dropped here — they are for display only and must not be fed back to the model.
+Before calling the provider, the agent converts the internal `list[StreamDelta]` to OpenAI's wire format using `delta_to_openai()`. `thinking` deltas are dropped here by default — they are for display only. The conversion is parameterized by the active model's capability flags (see `ModelConfig`): when `include_reasoning` is set (e.g. DeepSeek V4 / Kimi) the prior `thinking` is echoed back as `reasoning_content` on the assistant message, and when `image_input` is unset, image parts in user messages are replaced with a `[image]` placeholder.
 
 ---
 
@@ -192,7 +192,7 @@ Sessions are stored as JSONL files (`~/.nanobot/sessions/<channel>_<chat_id>.jso
 {"type": "content", "content": "It's sunny and 22°C today."}
 ```
 
-`system` deltas are never written (the system prompt is rebuilt from config each turn). `thinking` deltas are written for display continuity but are stripped by `delta_to_openai()` before being sent to the LLM again — the model never sees its own prior reasoning.
+`system` deltas are never written (the system prompt is rebuilt from config each turn). `thinking` deltas are written for display continuity and are stripped by `delta_to_openai()` before being sent to the LLM again — unless the active model has `include_reasoning` enabled, in which case the prior reasoning is echoed back as `reasoning_content`.
 
 When a session grows beyond `memory_window` messages, the agent asynchronously consolidates older history into a compressed memory summary to keep context windows manageable.
 

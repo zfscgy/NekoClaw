@@ -25,7 +25,8 @@ def missing_gateway_config_keys(config: Config) -> list[str]:
     sequence both in the warning and in the interactive prompt.
     """
     missing: list[str] = []
-    p = config.providers.openai
+    # Validate the provider that actually serves the selected default model.
+    p = config.providers.resolve(config.agents.defaults.model).provider
 
     if not (p.api_base or "").strip():
         missing.append("openai_base_url")

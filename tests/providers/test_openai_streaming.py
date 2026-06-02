@@ -83,15 +83,16 @@ MESSAGES = [
 
 async def test_openai_streaming() -> None:
     config = get_global_config()
-    provider_cfg = config.providers.openai
+    resolved = config.providers.resolve(config.agents.defaults.model)
+    provider_cfg = resolved.provider
 
     print(f"api_key : {provider_cfg.api_key[:8]}..." if provider_cfg.api_key else "api_key : (not set)")
     print(f"api_base: {provider_cfg.api_base or '(default OpenAI)'}")
-    print(f"model   : {config.agents.defaults.model}")
+    print(f"model   : {config.agents.defaults.model} -> {resolved.model_id}")
     print()
 
     provider = OpenAIProvider(
-        default_model=config.agents.defaults.model,
+        default_model=resolved.model_id,
         api_key=provider_cfg.api_key or None,
         api_base=provider_cfg.api_base or None,
         extra_headers=provider_cfg.extra_headers,

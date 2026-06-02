@@ -35,8 +35,10 @@ def _make_provider(config: Config):
     """
     from nekoclaw.providers.openai_provider import OpenAIProvider
 
-    model = config.agents.defaults.model
-    p = config.providers.openai
+    # ``agents.defaults.model`` is qualified (``providerName/modelId``); resolve
+    # it to the owning provider's credentials and the bare model id.
+    resolved = config.providers.resolve(config.agents.defaults.model)
+    p = resolved.provider
 
     if not p.api_key:
         console.print(
@@ -47,7 +49,7 @@ def _make_provider(config: Config):
     return OpenAIProvider(
         api_key=p.api_key,
         api_base=p.api_base,
-        default_model=model,
+        default_model=resolved.model_id,
         extra_headers=p.extra_headers,
     )
 
@@ -101,6 +103,11 @@ def gateway(
     bus = MessageBus()
     provider = _make_provider(cfg)
 
+    # Resolve the qualified default model once so the dispatcher gets the bare
+    # model id. Per-model capability flags are read from config on demand by
+    # ``delta_to_openai``.
+    resolved_model = cfg.providers.resolve(cfg.agents.defaults.model)
+
     from nekoclaw.config.manager import set_runtime
     set_runtime(cfg, provider)
 
@@ -111,7 +118,7 @@ def gateway(
         bus=bus,
         provider=provider,
         workspace=cfg.workspace_path,
-        model=cfg.agents.defaults.model,
+        model=resolved_model.model_id,
         temperature=cfg.agents.defaults.temperature,
         max_tokens=cfg.agents.defaults.max_tokens,
         max_iterations=cfg.agents.defaults.max_tool_iterations,

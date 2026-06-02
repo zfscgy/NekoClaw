@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import typing as t
-from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 from lightsear import engines as _engines
@@ -99,13 +98,13 @@ def _execute_search(
 
 def _aggregate_by_url(raw: list[SearchResult]) -> list[SearchResult]:
     """Merge duplicate URLs from different engines into a single result row."""
-    sources_per_url: dict[str, list[str]] = defaultdict(list)
+    sources_per_url: dict[str, list[str]] = {}
     first_seen: dict[str, SearchResult] = {}
     for result in raw:
         url = result.url
         if url not in first_seen:
             first_seen[url] = result
-        sources_per_url[url].append(result.sources)
+        sources_per_url.setdefault(url, []).append(result.sources)
 
     # Sort by hit count (descending), then by original appearance order.
     order = {url: i for i, url in enumerate(first_seen)}
