@@ -14,3 +14,5 @@ poetry.lock
 .pytest_cache/
 botpy.log
 node_modules/
+# Optional skills are downloaded at build time by resources/skills/build.py
+/resources/skills/skills/

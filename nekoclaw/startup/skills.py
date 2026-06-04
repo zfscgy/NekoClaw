@@ -1,13 +1,14 @@
 """Sync bundled optional skills into the user's workspace.
 
-The package ships skills under ``nekoclaw/skills/`` split into two groups:
+Skills come from two places:
 
-- ``internal/`` — always available, loaded directly from the package as
-  built-in skills.
-- ``optional/`` — recommended add-ons. On first launch they are copied into
-  ``<workspace>/skills/<name>/`` so they appear as workspace-managed skills:
-  the user can edit them, disable (zip) them, or delete them like any other
-  user-installed skill.
+- Built-in skills live under ``nekoclaw/skills/internal/`` and are loaded
+  directly from the package — they are always available.
+- Optional (recommended add-on) skills are downloaded at build time into
+  ``resources/skills/skills/`` (see ``resources/skills/build.py``). On first
+  launch they are copied into ``<workspace>/skills/<name>/`` so they appear as
+  workspace-managed skills: the user can edit them, disable (zip) them, or
+  delete them like any other user-installed skill.
 
 Skills that already exist in the workspace (either as a directory or a
 zipped, disabled archive) are left untouched, so user customizations and
@@ -16,7 +17,7 @@ disabled states are preserved across upgrades.
 
 from __future__ import annotations
 
-from importlib.resources import files as pkg_files
+import shutil
 from pathlib import Path
 
 from rich.console import Console
@@ -24,8 +25,18 @@ from rich.console import Console
 console = Console()
 
 
+def _optional_skills_dir() -> Path:
+    """Return the bundled optional-skill source directory.
+
+    Mirrors the resource resolution used elsewhere in ``nekoclaw.startup``:
+    this module lives at ``nekoclaw/startup/skills.py``, so ``parents[2]`` is
+    the project / bundle root, where ``resources/`` is shipped.
+    """
+    return Path(__file__).resolve().parents[2] / "resources" / "skills" / "skills"
+
+
 def sync_optional_skills(workspace: Path, *, silent: bool = False) -> list[str]:
-    """Copy bundled ``skills/optional/<name>`` directories into the workspace.
+    """Copy bundled ``resources/skills/skills/<name>`` dirs into the workspace.
 
     Args:
         workspace: The active workspace path. The target directory is
@@ -35,10 +46,7 @@ def sync_optional_skills(workspace: Path, *, silent: bool = False) -> list[str]:
     Returns:
         Names of skills that were newly installed during this call.
     """
-    try:
-        bundled = pkg_files("nekoclaw") / "skills" / "optional"
-    except Exception:
-        return []
+    bundled = _optional_skills_dir()
     if not bundled.is_dir():
         return []
 
@@ -46,7 +54,7 @@ def sync_optional_skills(workspace: Path, *, silent: bool = False) -> list[str]:
     target_root.mkdir(parents=True, exist_ok=True)
 
     added: list[str] = []
-    for entry in bundled.iterdir():
+    for entry in sorted(bundled.iterdir()):
         if not entry.is_dir():
             continue
         if not (entry / "SKILL.md").is_file():
@@ -59,7 +67,7 @@ def sync_optional_skills(workspace: Path, *, silent: bool = False) -> list[str]:
             continue
 
         try:
-            _copy_traversable(entry, dest)
+            shutil.copytree(entry, dest)
         except Exception as exc:
             console.print(
                 f"[yellow]可选 skill {name} 安装失败了喵: {exc}[/yellow]"
@@ -73,21 +81,3 @@ def sync_optional_skills(workspace: Path, *, silent: bool = False) -> list[str]:
             console.print(f"  [dim]新装好可选 skill {name} 喵～[/dim]")
 
     return added
-
-
-def _copy_traversable(src, dest: Path) -> None:
-    """Recursively copy an :mod:`importlib.resources` Traversable to ``dest``.
-
-    Works for both real filesystem paths (development / PyInstaller bundles)
-    and resources nested inside zip-style loaders.
-    """
-    if src.is_file():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with src.open("rb") as fh:
-            dest.write_bytes(fh.read())
-        return
-
-    if src.is_dir():
-        dest.mkdir(parents=True, exist_ok=True)
-        for child in src.iterdir():
-            _copy_traversable(child, dest / child.name)

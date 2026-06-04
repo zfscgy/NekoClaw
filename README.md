@@ -48,8 +48,8 @@ IM / Web 通道的消息，为每个会话起一个独立的 `AgentLoop`，通�
 
 | 类型                    | Skill                                                                                                                    | 说明                                       |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------ |
-| 内置（`skills/internal`） | `memory`、`cron`、`github`、`tmux`、`skill-creator`                                                                       | 主程序启动时自动可用                       |
-| 可选（`skills/optional`） | `weather`、`news-reader`、`internet-trending`、`read-office-files`、`create-docx`、`create-pptx`                          | 首次启动同步到 workspace，可在 UI 中开关 |
+| 内置（`nekoclaw/skills/internal`） | `memory`、`cron`、`github`、`tmux`、`skill-creator`                                                          | 主程序启动时自动可用                       |
+| 可选（`resources/skills/skills`） | `news-reader`、`internet-trending`、`read-documents`、`create-docx`、`create-pptx`                            | 构建时由 `resources/skills/build.py` 从 [ZhSkills](https://github.com/zfscgy/ZhSkills) 下载；首次启动同步到 workspace，可在 UI 中开关 |
 
 可选 Skill 中的 `create-docx` / `create-pptx` 会通过 `exec` 工具调用 NekoClaw
 自带的 Python 环境（见下方 [公共资源准备](#公共资源准备两种方式都需要)），

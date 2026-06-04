@@ -32,7 +32,11 @@ RESOURCES_DIR = ROOT / "resources"
 PACKPY_DIR = RESOURCES_DIR / "packpy"
 PACKPY_WIN64_DIR = PACKPY_DIR / "win64"
 PACKPY_WHEELS_DIR = PACKPY_WIN64_DIR / "wheels"
+PACKPY_BUILD_SCRIPT = PACKPY_WIN64_DIR / "build.ps1"
 CHROME_DIR = RESOURCES_DIR / "chrome"
+SKILLS_DIR = RESOURCES_DIR / "skills"
+SKILLS_BUILD_SCRIPT = SKILLS_DIR / "build.py"
+SKILLS_DOWNLOAD_DIR = SKILLS_DIR / "skills"
 APP_NAME = "NekoClaw"
 PACKAGES = ("nekoclaw", "lightsear")
 SKIP_MARKER = "# AutoCython No Compile"
@@ -193,6 +197,64 @@ def _ignore_resource_noise(_: str, names: list[str]) -> set[str]:
     }
     ignored_suffixes = (".pyc", ".pyo")
     return {name for name in names if name in ignored_dirs or name.endswith(ignored_suffixes)}
+
+
+def download_python_wheels(*, strict: bool) -> None:
+    """Download offline wheels for the bundled win64 Python env (``pip download``).
+
+    Delegates to ``resources/packpy/win64/build.ps1``, the Windows-specific
+    source of truth: it locates the bundled standalone ``python.exe`` and runs
+    ``pip download`` so the wheels match that interpreter's version/platform
+    tags, landing in ``resources/packpy/win64/wheels``.
+
+    Only Windows (win64) is handled — no packed Python is shipped for other
+    platforms yet. A failure is non-fatal unless ``strict`` is set.
+    """
+    if not PACKPY_BUILD_SCRIPT.exists():
+        message = f"Missing packpy build script: {PACKPY_BUILD_SCRIPT}"
+        if strict:
+            raise FileNotFoundError(message)
+        print(f"WARNING: {message}", file=sys.stderr)
+        return
+
+    powershell = _find_executable("pwsh.exe", "pwsh", "powershell.exe", "powershell")
+    if powershell is None:
+        message = "PowerShell was not found on PATH; cannot run build.ps1 to download wheels."
+        if strict:
+            raise RuntimeError(message)
+        print(f"WARNING: {message}", file=sys.stderr)
+        return
+
+    try:
+        _run([powershell, "-ExecutionPolicy", "Bypass", "-File", str(PACKPY_BUILD_SCRIPT)])
+    except subprocess.CalledProcessError as exc:
+        message = f"build.ps1 wheel download failed (exit {exc.returncode})"
+        if strict:
+            raise
+        print(f"WARNING: {message}", file=sys.stderr)
+
+
+def download_optional_skills(*, strict: bool) -> None:
+    """Fetch the optional skill pack into ``resources/skills/skills``.
+
+    Optional skills are not vendored in the repo; ``resources/skills/build.py``
+    downloads them so they can be bundled and synced into the user's workspace
+    on first launch. A network failure is non-fatal unless ``strict`` is set.
+    """
+    if not SKILLS_BUILD_SCRIPT.exists():
+        message = f"Missing optional-skill build script: {SKILLS_BUILD_SCRIPT}"
+        if strict:
+            raise FileNotFoundError(message)
+        print(f"WARNING: {message}", file=sys.stderr)
+        return
+
+    try:
+        _run([sys.executable, str(SKILLS_BUILD_SCRIPT)])
+    except subprocess.CalledProcessError as exc:
+        message = f"Optional-skill download failed (exit {exc.returncode})"
+        if strict:
+            raise
+        print(f"WARNING: {message}", file=sys.stderr)
 
 
 def stage_resources(*, clean: bool) -> Path:
@@ -384,6 +446,16 @@ def parse_args() -> argparse.Namespace:
         help="Fail when packpy/chrome resources are incomplete instead of warning.",
     )
     parser.add_argument(
+        "--skip-wheel-download",
+        action="store_true",
+        help="Use the existing resources/packpy/win64/wheels instead of re-running pip download.",
+    )
+    parser.add_argument(
+        "--skip-skill-download",
+        action="store_true",
+        help="Use the existing resources/skills/skills instead of re-downloading the optional skill pack.",
+    )
+    parser.add_argument(
         "--windowed",
         action="store_true",
         help="Build a windowed executable. By default the exe keeps a console for startup diagnostics.",
@@ -397,6 +469,12 @@ def main() -> None:
 
     if not args.skip_frontend_build:
         build_frontend(skip_install=args.skip_npm_install)
+
+    if not args.skip_wheel_download:
+        download_python_wheels(strict=args.strict_resources)
+
+    if not args.skip_skill_download:
+        download_optional_skills(strict=args.strict_resources)
 
     validate_resources(strict=args.strict_resources)
 

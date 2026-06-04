@@ -7,15 +7,16 @@
 - [x] Skill setting tab
 - [x] Add time field to StreamDelta
 - [x] Show tool call details
+- [x] Config UI optimization
 
 ## Agent
 ### Loop
 - [x] Fetching subagent/user message in inner loop (ReAct loop)
-- [ ] Stop immediately
+- [x] Stop immediately
 - [ ] Context compression
 
 ### Configuration
-- [ ] Enable model-specific configuration for sending back reasoning (support deepseek v4/kimi k2.6)
+- [x] Enable model-specific configuration for sending back reasoning (support deepseek v4/kimi k2.6)
 
 ## Tools
 ### EXEC
