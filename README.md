@@ -340,8 +340,8 @@ NekoClaw 的配置是 **「`config.json` + 三个 sidecar」** 的四文件结�
 
 其它说明：
 
-- 工作区（workspace）默认在 `~/.nekoclaw/workspace/`，首次启动时会按
-  `agents.defaults.templateLocale`（`en` / `cn`）从 `nekoclaw/templates/` 同步模板
+- 工作区（workspace）默认在 `~/.nekoclaw/workspace/`，首次启动时会从
+  `nekoclaw/templates/` 同步模板
 - 定时任务存到 `~/.nekoclaw/cron/jobs.json`，由 `CronService` 加载
 - 日志在 `~/.nekoclaw/logs/`，媒体文件按通道分目录写到 `~/.nekoclaw/media/`
 - 没填 API Key 时 Gateway 也能启动；可以稍后从 NekoChat 的「Config」面板补填，

@@ -97,9 +97,7 @@ def gateway(
     from nekoclaw.heartbeat.service import HeartbeatService
     from nekoclaw.providers.base import StreamDelta
 
-    sync_workspace_templates(
-        cfg.workspace_path, template_locale=cfg.agents.defaults.template_locale
-    )
+    sync_workspace_templates(cfg.workspace_path)
     bus = MessageBus()
     provider = _make_provider(cfg)
 

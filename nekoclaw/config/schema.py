@@ -58,10 +58,6 @@ class AgentDefaults(Base):
     """Default agent configuration."""
 
     workspace: str = (Path.home() / ".nekoclaw/workspace").as_posix()
-    template_locale: Literal["en", "cn"] = Field(
-        default="en",
-        description="Locale for bundled workspace templates synced on startup (en or cn).",
-    )
     # Qualified model id in ``providerName/modelId`` form (e.g.
     # ``default/gpt-5.4`` or ``openrouter/openai/gpt-5.5``). The part before the
     # first ``/`` names the provider in ``providers.openai``; the remainder is

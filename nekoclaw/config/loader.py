@@ -157,7 +157,6 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     - OpenAI API base URL (active provider's ``api_base``)
     - OpenAI API key      (active provider's ``api_key``)
     - Default model       (``agents.defaults.model``)
-    - Template locale     (``agents.defaults.template_locale`` — ``en`` or ``cn``)
 
     Current values (if any) are shown as defaults; press Enter to keep them.
 
@@ -222,14 +221,6 @@ def prompt_configs(config_path: Path | None = None) -> Config:
     ).strip()
     if new_model:
         cfg.agents.defaults.model = new_model
-
-    console.print("\n[bold]界面语言喵[/bold]")
-    new_locale = Prompt.ask(
-        "  locale",
-        choices=["en", "cn"],
-        default=cfg.agents.defaults.template_locale,
-    )
-    cfg.agents.defaults.template_locale = new_locale  # type: ignore[assignment]
 
     save_config(cfg, path)
     console.print(f"\n[green]✓[/green] 配置已保存到 [cyan]{path}[/cyan] 喵～")

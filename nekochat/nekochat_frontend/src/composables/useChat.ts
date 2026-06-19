@@ -324,6 +324,37 @@ export function useChat() {
 
   let _toolCallState: ToolCallState = { current: null }
   let _roundStart = 0
+
+  // ── Streaming batch buffer ────────────────────────────────────────
+  // High-frequency stream deltas (token-by-token text, tool-call argument
+  // chunks, subagent deltas) are aggregated into a non-reactive queue and
+  // flushed periodically. Without this, each delta triggers a full
+  // markdown + DOMPurify + KaTeX re-render of the streaming bubble, which
+  // becomes the dominant cost when the model emits dozens of tokens per
+  // second. Flushing at `STREAM_FLUSH_INTERVAL_MS` caps the markdown work
+  // at ~(1000 / interval) renders/sec while still feeling live. Tune via
+  // the constant below — e.g. set to 1000 for the most aggressive batching.
+  const STREAM_FLUSH_INTERVAL_MS = 200
+
+  interface BufferedDelta {
+    cid: string
+    kind:
+      | 'thinking'
+      | 'content'
+      | 'tool_call'
+      | 'subagent_thinking'
+      | 'subagent_content'
+      | 'subagent_tool_call'
+      | 'subagent_tool_call_results'
+    text?: string
+    role?: string
+    tc?: ToolCallPayload
+    results?: ToolCallResultPayload[]
+    subagentId?: string
+  }
+
+  const _streamBuffer: BufferedDelta[] = []
+  let _flushTimer: number | undefined
   // Keys that the user explicitly opened via the toggle UI (not auto-opened).
   // Auto-close logic skips these so user-opened panels stay open.
   const _userOpenedKeys = new Set<string>()
@@ -628,11 +659,81 @@ export function useChat() {
     }
   }
 
+  // ── Stream buffer flush ───────────────────────────────────────────
+
+  function _scheduleFlush(): void {
+    if (_flushTimer !== undefined) return
+    _flushTimer = window.setTimeout(() => {
+      _flushTimer = undefined
+      _flushStreamBuffer()
+    }, STREAM_FLUSH_INTERVAL_MS)
+  }
+
+  // Drain the buffered deltas in arrival order and apply them to the
+  // reactive arrays in a single batch. Vue collects every mutation in
+  // this synchronous block into one render pass, so `messageGroups` and
+  // the streaming `MessageBubble.rendered` computed run at most once
+  // per flush regardless of how many deltas were queued.
+  function _flushStreamBuffer(): void {
+    if (_flushTimer !== undefined) {
+      clearTimeout(_flushTimer)
+      _flushTimer = undefined
+    }
+    if (!_streamBuffer.length) return
+
+    let subagentsDirty = false
+    for (const d of _streamBuffer) {
+      if (
+        d.kind === 'thinking' ||
+        d.kind === 'content' ||
+        d.kind === 'tool_call'
+      ) {
+        if (!messagesByConv.value[d.cid]) messagesByConv.value[d.cid] = []
+        const arr = messagesByConv.value[d.cid]
+        if (d.kind === 'thinking') {
+          _appendStreamText(arr, 'think', undefined, d.text || '')
+        } else if (d.kind === 'content') {
+          _appendStreamText(arr, 'content', d.role || 'assistant', d.text || '')
+        } else if (d.tc) {
+          _handleToolCallDelta(arr, d.cid, d.tc)
+        }
+      } else if (d.subagentId) {
+        const subs = subagents.value[d.cid] || []
+        const sub = subs.find(s => s.id === d.subagentId)
+        if (!sub) continue
+        if (d.kind === 'subagent_thinking') {
+          _appendStreamText(sub.items, 'think', undefined, d.text || '')
+        } else if (d.kind === 'subagent_content') {
+          _appendStreamText(sub.items, 'content', 'assistant', d.text || '')
+        } else if (d.kind === 'subagent_tool_call' && d.tc) {
+          _handleSubagentToolCallDelta(sub, d.cid, d.tc)
+        } else if (d.kind === 'subagent_tool_call_results' && d.results) {
+          _applyToolCallResults(sub.items, d.cid, d.results)
+        }
+        subagentsDirty = true
+      }
+    }
+    _streamBuffer.length = 0
+    if (subagentsDirty) {
+      subagents.value = { ...subagents.value }
+    }
+    scrollToBottom()
+  }
+
+  function _clearStreamBuffer(): void {
+    _streamBuffer.length = 0
+    if (_flushTimer !== undefined) {
+      clearTimeout(_flushTimer)
+      _flushTimer = undefined
+    }
+  }
+
   // ── WebSocket ──────────────────────────────────────────────────────
 
   function _closeWs(): void {
     wsGeneration++
     clearTimeout(wsReconnectTimer)
+    _clearStreamBuffer()
     if (ws) {
       try { ws.close() } catch (_) {}
       ws = null
@@ -658,6 +759,93 @@ export function useChat() {
       if (wsGeneration !== myGen) return
       const msg = JSON.parse(ev.data as string) as WsMessage
       const cid = msg.conversation_id || convId
+
+      // ── Fast path: queue high-frequency stream deltas ───────────────
+      // These are the messages that arrive token-by-token during model
+      // generation. Buffering them avoids one full markdown render per
+      // token. The reactive UI still updates promptly because a flush is
+      // scheduled within STREAM_FLUSH_INTERVAL_MS of the first queued
+      // delta. We flip the streaming flags immediately so the "typing"
+      // cursor / status badge show up without waiting for the first flush.
+      if (
+        msg.type === 'thinking' ||
+        msg.type === 'subagent_delta' ||
+        ((msg.type === 'content' || msg.type === 'tool_call') &&
+          '_delta' in msg &&
+          !!msg._delta)
+      ) {
+        isStreaming.value = true
+        streamActive.value = true
+        streamDone.value = false
+
+        if (msg.type === 'thinking') {
+          _streamBuffer.push({ cid, kind: 'thinking', text: msg.content || '' })
+        } else if (msg.type === 'content') {
+          _streamBuffer.push({
+            cid,
+            kind: 'content',
+            role: 'assistant',
+            text: msg.content || '',
+          })
+        } else if (msg.type === 'tool_call') {
+          _streamBuffer.push({
+            cid,
+            kind: 'tool_call',
+            tc: msg.content as ToolCallPayload,
+          })
+        } else {
+          const sdMsg = msg as {
+            subagent_id: string
+            delta_type: string
+            content?: string | ToolCallPayload
+            results?: ToolCallResultPayload[]
+          }
+          if (sdMsg.delta_type === 'thinking') {
+            _streamBuffer.push({
+              cid,
+              kind: 'subagent_thinking',
+              subagentId: sdMsg.subagent_id,
+              text: (sdMsg.content as string) || '',
+            })
+          } else if (sdMsg.delta_type === 'content') {
+            _streamBuffer.push({
+              cid,
+              kind: 'subagent_content',
+              subagentId: sdMsg.subagent_id,
+              text: (sdMsg.content as string) || '',
+            })
+          } else if (sdMsg.delta_type === 'tool_call') {
+            const tcPayload = sdMsg.content as ToolCallPayload
+            if (tcPayload && typeof tcPayload === 'object') {
+              _streamBuffer.push({
+                cid,
+                kind: 'subagent_tool_call',
+                subagentId: sdMsg.subagent_id,
+                tc: tcPayload,
+              })
+            }
+          } else if (sdMsg.delta_type === 'tool_call_results') {
+            const results = sdMsg.results || []
+            if (results.length) {
+              _streamBuffer.push({
+                cid,
+                kind: 'subagent_tool_call_results',
+                subagentId: sdMsg.subagent_id,
+                results,
+              })
+            }
+          }
+        }
+        _scheduleFlush()
+        return
+      }
+
+      // ── Slow path: apply any queued deltas before this event ────────
+      // Non-delta events (replays, full content, stream lifecycle, subagent
+      // start/end/ref, tool-call results) need to see the up-to-date state
+      // produced by previous deltas, so drain the buffer first.
+      _flushStreamBuffer()
+
       if (!messagesByConv.value[cid]) messagesByConv.value[cid] = []
       const arr = messagesByConv.value[cid]
 
@@ -691,24 +879,12 @@ export function useChat() {
           _roundStart = arr.length
           break
 
-        case 'thinking':
-          isStreaming.value = true
-          streamActive.value = true
-          _appendStreamText(arr, 'think', undefined, msg.content || '')
-          break
-
         // Session replay uses 'think' from _session_to_ui
         case 'think':
           arr.push(msg as ChatMessage)
           break
 
         case 'content': {
-          if ('_delta' in msg && msg._delta) {
-            isStreaming.value = true
-            streamActive.value = true
-            _appendStreamText(arr, 'content', 'assistant', msg.content || '')
-            break
-          }
           if (msg.role === 'assistant') {
             isTyping.value = false
             isStreaming.value = false
@@ -723,12 +899,6 @@ export function useChat() {
         }
 
         case 'tool_call': {
-          if ('_delta' in msg && msg._delta) {
-            isStreaming.value = true
-            streamActive.value = true
-            _handleToolCallDelta(arr, cid, msg.content as ToolCallPayload)
-            break
-          }
           const tc = msg.content
           const chatMsg = _toolCallPayloadToChatMessage(tc, cid, {
             tool_call_id: (msg as { tool_call_id?: string }).tool_call_id,
@@ -760,29 +930,6 @@ export function useChat() {
           const existing = subagents.value[cid].find(s => s.id === sid || s.sessionId === sessionKey)
           if (!existing) {
             subagents.value[cid].push({ id: sid, label, status: 'running', items: [] })
-            subagents.value = { ...subagents.value }
-          }
-          break
-        }
-
-        case 'subagent_delta': {
-          const sdMsg = msg as { subagent_id: string; delta_type: string; content?: string | ToolCallPayload; results?: ToolCallResultPayload[] }
-          const subs = subagents.value[cid] || []
-          const sub = subs.find(s => s.id === sdMsg.subagent_id)
-          if (sub) {
-            if (sdMsg.delta_type === 'thinking') {
-              _appendStreamText(sub.items, 'think', undefined, (sdMsg.content as string) || '')
-            } else if (sdMsg.delta_type === 'content') {
-              _appendStreamText(sub.items, 'content', 'assistant', (sdMsg.content as string) || '')
-            } else if (sdMsg.delta_type === 'tool_call') {
-              const tcPayload = sdMsg.content as ToolCallPayload
-              if (tcPayload && typeof tcPayload === 'object') {
-                _handleSubagentToolCallDelta(sub, cid, tcPayload)
-              }
-            } else if (sdMsg.delta_type === 'tool_call_results') {
-              const results = sdMsg.results || []
-              if (results.length) _applyToolCallResults(sub.items, cid, results)
-            }
             subagents.value = { ...subagents.value }
           }
           break
@@ -890,6 +1037,7 @@ export function useChat() {
     isTyping.value = false
     isStreaming.value = false
     streamActive.value = false
+    _clearStreamBuffer()
     for (const k of Object.keys(_openCache)) delete _openCache[k]
     _userOpenedKeys.clear()
     groupOpenState.value = {}
