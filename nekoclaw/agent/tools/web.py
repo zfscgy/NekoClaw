@@ -28,7 +28,7 @@ class WebSearchTool(Tool):
         "required": ["query"]
     }
 
-    def __init__(self, max_results: int = 10):
+    def __init__(self, max_results: int = 20):
         self.max_results = max_results
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
@@ -53,12 +53,22 @@ class WebFetchTool(Tool):
     """Fetch and extract content from a URL using Readability."""
 
     name = "web_fetch"
-    description = "Fetch URL and extract readable content (HTML → markdown/text)."
+    description = "Fetch URL and extract readable content (HTML → markdown/html)."
     parameters = {
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "URL to fetch"},
-            "extractMode": {"type": "string", "enum": ["markdown", "text"], "default": "markdown"},
+            "extractMode": {
+                "type": "string",
+                "enum": ["markdown", "html"],
+                "default": "markdown",
+                "description": (
+                    "'markdown' (default) is compact and cheap. 'html' returns the "
+                    "cleaned raw HTML, which is much more verbose and consumes "
+                    "significantly more tokens — only use it when you specifically "
+                    "need the raw markup."
+                ),
+            },
             "maxChars": {"type": "integer", "minimum": 100}
         },
         "required": ["url"]

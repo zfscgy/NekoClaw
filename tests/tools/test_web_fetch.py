@@ -1,9 +1,9 @@
 from nekoclaw.tools.web import lightsear_fetch
 
 
-def test__web_fetch_text():
+def test__web_fetch_html():
     url = "https://en.wikipedia.org/wiki/Theory_of_relativity"
-    text = lightsear_fetch(url, mode="text")
+    text = lightsear_fetch(url, mode="html")
     assert isinstance(text, str)
     assert len(text) > 0
     print(text)
@@ -18,5 +18,5 @@ def test__web_fetch_markdown():
 
 
 if __name__ == "__main__":
-    test__web_fetch_text()
+    test__web_fetch_html()
     test__web_fetch_markdown()

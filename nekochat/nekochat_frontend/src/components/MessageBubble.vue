@@ -17,8 +17,9 @@
           </a>
         </template>
       </div>
-      <div v-if="formattedTime || (streamStatus && role !== 'user')" class="msg-footer">
+      <div v-if="formattedTime || model && role === 'assistant' || (streamStatus && role !== 'user')" class="msg-footer">
         <span v-if="formattedTime" class="msg-time">{{ formattedTime }}</span>
+        <span v-if="model && role === 'assistant'" class="msg-model" :title="model">{{ model }}</span>
         <span
           v-if="streamStatus && role !== 'user'"
           class="stream-status-icon bubble-status"
@@ -56,12 +57,14 @@ const props = withDefaults(defineProps<{
   role: string
   content?: string
   media?: string[]
+  model?: string
   appendCursor?: boolean
   streamStatus?: StreamStatus
   time?: string
 }>(), {
   content: '',
   media: () => [],
+  model: undefined,
   appendCursor: false,
   streamStatus: undefined,
   time: undefined,

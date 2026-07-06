@@ -17,6 +17,7 @@ from nekoclaw.agent.tools.shell import ExecTool
 from nekoclaw.agent.tools.web import WebFetchTool, WebSearchTool
 from nekoclaw.bus.events import InboundMessage, OutboundMessage
 from nekoclaw.bus.queue import MessageBus
+from nekoclaw.config.schema import resolve_model_tag
 from nekoclaw.providers.base import LLMProvider, StreamDelta, ToolCallRequest, ToolCallResult, parse_stream_deltas
 from nekoclaw.session.manager import Session, SessionManager
 
@@ -146,6 +147,7 @@ class SubagentManager:
             report_retry_count = 0
             final_result: str | None = None
             final_status = "error"
+            model_tag = resolve_model_tag(self.model)
             reminder = (
                 "Continue the task and remember to call ReportTask when task is finished. "
                 "The main agent can only see the content you send through ReportTask."
@@ -204,6 +206,8 @@ class SubagentManager:
                         max_tokens=self.max_tokens,
                         reasoning_effort=self.reasoning_effort,
                     ):
+                        if delta.type in ("thinking", "content", "tool_call"):
+                            delta.model = model_tag
                         # Stream delta to the frontend
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=channel, chat_id=chat_id,
@@ -234,6 +238,8 @@ class SubagentManager:
                         reasoning_effort=self.reasoning_effort,
                     )
                     for delta in deltas:
+                        if delta.type in ("thinking", "content", "tool_call"):
+                            delta.model = model_tag
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=channel, chat_id=chat_id,
                             type="delta", msg=delta,
@@ -250,16 +256,16 @@ class SubagentManager:
                 response_thinking = "".join(thinking_chunks).strip() or None
 
                 if response_thinking:
-                    messages.append(StreamDelta(type="thinking", content=response_thinking))
-                    session.messages.append(StreamDelta(type="thinking", content=response_thinking))
+                    messages.append(StreamDelta(type="thinking", content=response_thinking, model=model_tag))
+                    session.messages.append(StreamDelta(type="thinking", content=response_thinking, model=model_tag))
 
                 if response_tool_calls:
                     if response_content:
-                        messages.append(StreamDelta(type="content", content=response_content))
-                        session.messages.append(StreamDelta(type="content", content=response_content))
+                        messages.append(StreamDelta(type="content", content=response_content, model=model_tag))
+                        session.messages.append(StreamDelta(type="content", content=response_content, model=model_tag))
                     for tc in response_tool_calls:
-                        messages.append(StreamDelta(type="tool_call", content=tc))
-                        session.messages.append(StreamDelta(type="tool_call", content=tc))
+                        messages.append(StreamDelta(type="tool_call", content=tc, model=model_tag))
+                        session.messages.append(StreamDelta(type="tool_call", content=tc, model=model_tag))
 
                     tool_results: list[ToolCallResult] = []
                     for tool_call in response_tool_calls:
@@ -305,8 +311,8 @@ class SubagentManager:
                     continue
                 else:
                     if response_content:
-                        messages.append(StreamDelta(type="content", content=response_content))
-                        session.messages.append(StreamDelta(type="content", content=response_content))
+                        messages.append(StreamDelta(type="content", content=response_content, model=model_tag))
+                        session.messages.append(StreamDelta(type="content", content=response_content, model=model_tag))
                     reminder_time = datetime.now(timezone.utc).isoformat()
                     messages.append(StreamDelta(
                         type="user", content=reminder, time=reminder_time,

@@ -231,6 +231,7 @@ class NekoChatChannel(BaseChannel):
                     ui.append({
                         "type": "think", "role": "assistant",
                         "content": text, "media": [],
+                        "model": m.get("model"),
                         "conversation_id": cid,
                     })
 
@@ -239,6 +240,7 @@ class NekoChatChannel(BaseChannel):
                     entry: dict[str, Any] = {
                         "type": "content", "role": "assistant",
                         "content": raw, "media": [],
+                        "model": m.get("model"),
                         "conversation_id": cid,
                     }
                     if m.get("time"):
@@ -271,6 +273,7 @@ class NekoChatChannel(BaseChannel):
                     "role": "assistant",
                     "content": tc_content,
                     "media": [],
+                    "model": m.get("model"),
                     "conversation_id": cid,
                 })
 
@@ -374,10 +377,11 @@ class NekoChatChannel(BaseChannel):
 
         if delta.type == "thinking":
             cur = self._cur_round.setdefault(conversation_id, {})
-            self._append_cur_round_text_item(cur, "thinking", delta.content)
+            self._append_cur_round_text_item(cur, "thinking", delta.content, delta.model)
             await self._broadcast(conversation_id, {
                 "type": "thinking",
                 "content": delta.content,
+                "model": delta.model,
                 "conversation_id": conversation_id,
                 "_delta": True,
             })
@@ -385,11 +389,12 @@ class NekoChatChannel(BaseChannel):
 
         if delta.type == "content" and isinstance(delta.content, str):
             cur = self._cur_round.setdefault(conversation_id, {})
-            self._append_cur_round_text_item(cur, "content", delta.content)
+            self._append_cur_round_text_item(cur, "content", delta.content, delta.model)
             await self._broadcast(conversation_id, {
                 "type": "content",
                 "role": "assistant",
                 "content": delta.content,
+                "model": delta.model,
                 "conversation_id": conversation_id,
                 "_delta": True,
             })
@@ -431,7 +436,7 @@ class NekoChatChannel(BaseChannel):
 
             if tc.partial:
                 cur = self._cur_round.setdefault(conversation_id, {})
-                self._append_cur_round_tool_delta_item(cur, tc_dict)
+                self._append_cur_round_tool_delta_item(cur, tc_dict, delta.model)
 
                 broadcast_tc = dict(tc_dict)
                 if isinstance(tc.arguments, dict) and tc.name == "send_message_with_attachments":
@@ -441,6 +446,7 @@ class NekoChatChannel(BaseChannel):
                 await self._broadcast(conversation_id, {
                     "type": "tool_call",
                     "content": broadcast_tc,
+                    "model": delta.model,
                     "conversation_id": conversation_id,
                     "_delta": True,
                 })
@@ -457,6 +463,7 @@ class NekoChatChannel(BaseChannel):
             payload: dict[str, Any] = {
                 "type": "tool_call",
                 "content": tc_dict,
+                "model": delta.model,
                 "conversation_id": conversation_id,
                 "_delta": True,
             }
@@ -546,24 +553,26 @@ class NekoChatChannel(BaseChannel):
 
         if delta.type == "thinking":
             cur = state.setdefault("cur_round", {})
-            self._append_cur_round_text_item(cur, "thinking", delta.content)
+            self._append_cur_round_text_item(cur, "thinking", delta.content, delta.model)
             await self._broadcast(conversation_id, {
                 "type": "subagent_delta",
                 "subagent_id": sub_id,
                 "delta_type": "thinking",
                 "content": delta.content,
+                "model": delta.model,
                 "conversation_id": conversation_id,
             })
             return
 
         if delta.type == "content" and isinstance(delta.content, str):
             cur = state.setdefault("cur_round", {})
-            self._append_cur_round_text_item(cur, "content", delta.content)
+            self._append_cur_round_text_item(cur, "content", delta.content, delta.model)
             await self._broadcast(conversation_id, {
                 "type": "subagent_delta",
                 "subagent_id": sub_id,
                 "delta_type": "content",
                 "content": delta.content,
+                "model": delta.model,
                 "conversation_id": conversation_id,
             })
             return
@@ -577,12 +586,13 @@ class NekoChatChannel(BaseChannel):
 
             if tc.partial:
                 cur = state.setdefault("cur_round", {})
-                self._append_cur_round_tool_delta_item(cur, tc_dict)
+                self._append_cur_round_tool_delta_item(cur, tc_dict, delta.model)
                 await self._broadcast(conversation_id, {
                     "type": "subagent_delta",
                     "subagent_id": sub_id,
                     "delta_type": "tool_call",
                     "content": tc_dict,
+                    "model": delta.model,
                     "conversation_id": conversation_id,
                 })
                 return
@@ -597,6 +607,7 @@ class NekoChatChannel(BaseChannel):
                 "subagent_id": sub_id,
                 "delta_type": "tool_call",
                 "content": tc_dict,
+                "model": delta.model,
                 "conversation_id": conversation_id,
             }
             state["segments"].append(payload)
@@ -639,6 +650,7 @@ class NekoChatChannel(BaseChannel):
                     "subagent_id": sub_id,
                     "delta_type": "thinking",
                     "content": item["content"],
+                    "model": item.get("model"),
                     "conversation_id": conversation_id,
                 })
             elif kind == "content" and item.get("content"):
@@ -647,6 +659,7 @@ class NekoChatChannel(BaseChannel):
                     "subagent_id": sub_id,
                     "delta_type": "content",
                     "content": item["content"],
+                    "model": item.get("model"),
                     "conversation_id": conversation_id,
                 })
             elif kind == "tool_delta" and item.get("content"):
@@ -655,6 +668,7 @@ class NekoChatChannel(BaseChannel):
                     "subagent_id": sub_id,
                     "delta_type": "tool_call",
                     "content": item["content"],
+                    "model": item.get("model"),
                     "conversation_id": conversation_id,
                 })
         return payloads
@@ -668,7 +682,7 @@ class NekoChatChannel(BaseChannel):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _append_cur_round_text_item(cur: dict[str, Any], kind: str, content: str) -> None:
+    def _append_cur_round_text_item(cur: dict[str, Any], kind: str, content: str, model: str | None = None) -> None:
         """Append a streaming text item while preserving adjacency order."""
         if not content:
             return
@@ -676,16 +690,18 @@ class NekoChatChannel(BaseChannel):
         last = items[-1] if items else None
         if last and last.get("kind") == kind:
             last["content"] = (last.get("content") or "") + content
+            if model:
+                last["model"] = model
             return
-        items.append({"kind": kind, "content": content})
+        items.append({"kind": kind, "content": content, "model": model})
 
     @staticmethod
-    def _append_cur_round_tool_delta_item(cur: dict[str, Any], content: dict[str, Any]) -> None:
+    def _append_cur_round_tool_delta_item(cur: dict[str, Any], content: dict[str, Any], model: str | None = None) -> None:
         """Append a tool-call delta dict in arrival order for reconnect replay."""
         if not content:
             return
         items = cur.setdefault("items", [])
-        items.append({"kind": "tool_delta", "content": content})
+        items.append({"kind": "tool_delta", "content": content, "model": model})
 
     @staticmethod
     def _cur_round_to_replay_payloads(
@@ -699,6 +715,7 @@ class NekoChatChannel(BaseChannel):
                 payloads.append({
                     "type": "thinking",
                     "content": item["content"],
+                    "model": item.get("model"),
                     "conversation_id": conversation_id,
                     "_delta": True,
                 })
@@ -707,6 +724,7 @@ class NekoChatChannel(BaseChannel):
                     "type": "content",
                     "role": "assistant",
                     "content": item["content"],
+                    "model": item.get("model"),
                     "conversation_id": conversation_id,
                     "_delta": True,
                 })
@@ -714,6 +732,7 @@ class NekoChatChannel(BaseChannel):
                 payloads.append({
                     "type": "tool_call",
                     "content": item["content"],
+                    "model": item.get("model"),
                     "conversation_id": conversation_id,
                     "_delta": True,
                 })
@@ -929,10 +948,10 @@ class NekoChatChannel(BaseChannel):
             if dtype == "thinking":
                 text = (raw or "").strip() if isinstance(raw, str) else ""
                 if text:
-                    ui.append({"type": "think", "content": text})
+                    ui.append({"type": "think", "content": text, "model": m.get("model")})
             elif dtype == "content":
                 if raw:
-                    ui.append({"type": "content", "role": "assistant", "content": raw})
+                    ui.append({"type": "content", "role": "assistant", "content": raw, "model": m.get("model")})
             elif dtype == "tool_call":
                 tc = raw if isinstance(raw, dict) else {}
                 name = tc.get("name", "tool")
@@ -944,7 +963,7 @@ class NekoChatChannel(BaseChannel):
                     "arguments": args,
                     "partial": bool(tc.get("partial", False)),
                 }
-                ui.append({"type": "tool_call", "content": tc_content})
+                ui.append({"type": "tool_call", "content": tc_content, "model": m.get("model")})
             elif dtype == "tool_call_results" and isinstance(raw, list):
                 results: list[dict[str, Any]] = []
                 for r in raw:

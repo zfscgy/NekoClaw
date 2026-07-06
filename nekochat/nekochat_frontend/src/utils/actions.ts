@@ -5,6 +5,7 @@ export interface ActionItem {
   toolName?: string
   toolResult?: string
   toolArguments?: Record<string, unknown>
+  model?: string
 }
 
 const SUBAGENT_TOOL_NAMES = new Set(['call_subagent', 'spawn'])

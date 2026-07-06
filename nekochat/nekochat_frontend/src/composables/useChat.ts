@@ -25,6 +25,9 @@ export interface ChatMessage {
   conversation_id?: string
   _replay?: boolean
   time?: string
+  // ``providerName:modelId`` tag of the model that produced this assistant
+  // delta. Present on assistant-generated entries (content/think/tool_call).
+  model?: string
   // Only meaningful for type === 'tool_call': the provider tool_call id,
   // used to match against tool_call_results for click-to-reveal display.
   toolCallId?: string
@@ -62,6 +65,7 @@ export interface ContentGroup {
   appendCursor?: boolean
   streamStatus?: StreamStatus
   time?: string
+  model?: string
 }
 
 export interface ActionsGroup {
@@ -107,13 +111,13 @@ interface ToolCallResultPayload {
 type WsMessage =
   | { type: 'stream_start'; conversation_id?: string }
   | { type: 'stream_end'; conversation_id?: string; time?: string }
-  | { type: 'thinking'; content?: string; conversation_id?: string; _delta?: boolean }
-  | { type: 'content'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean; time?: string }
-  | { type: 'think'; role?: string; content?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
-  | { type: 'tool_call'; role?: string; content?: string | ToolCallPayload; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean; tool_call_id?: string; tool_name?: string }
+  | { type: 'thinking'; content?: string; model?: string; conversation_id?: string; _delta?: boolean }
+  | { type: 'content'; role?: string; content?: string; model?: string; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean; time?: string }
+  | { type: 'think'; role?: string; content?: string; model?: string; media?: string[]; conversation_id?: string; _replay?: boolean }
+  | { type: 'tool_call'; role?: string; content?: string | ToolCallPayload; model?: string; media?: string[]; conversation_id?: string; _replay?: boolean; _delta?: boolean; tool_call_id?: string; tool_name?: string }
   | { type: 'tool_call_results'; results: ToolCallResultPayload[]; conversation_id?: string; _replay?: boolean }
   | { type: 'subagent_start'; subagent_id: string; label: string; conversation_id?: string; _replay?: boolean }
-  | { type: 'subagent_delta'; subagent_id: string; delta_type: 'thinking' | 'content' | 'tool_call' | 'tool_call_results'; content?: string | ToolCallPayload; results?: ToolCallResultPayload[]; conversation_id?: string }
+  | { type: 'subagent_delta'; subagent_id: string; delta_type: 'thinking' | 'content' | 'tool_call' | 'tool_call_results'; content?: string | ToolCallPayload; results?: ToolCallResultPayload[]; model?: string; conversation_id?: string }
   | { type: 'subagent_end'; subagent_id: string; status: string; conversation_id?: string }
   | { type: 'subagent_ref'; session_id: string; label: string; status: string; task?: string; announce?: string; conversation_id?: string; _replay?: boolean }
 
@@ -166,9 +170,10 @@ function _extractArgsFromContent(content: string): Record<string, unknown> | und
 function _toolCallPayloadToChatMessage(
   tc: string | ToolCallPayload | undefined,
   cid: string,
-  extras?: { tool_call_id?: string; tool_name?: string },
+  extras?: { tool_call_id?: string; tool_name?: string; model?: string },
 ): ChatMessage | null {
   if (!tc) return null
+  const model = extras?.model
 
   // Legacy: string content from session replay
   if (typeof tc === 'string') {
@@ -176,13 +181,14 @@ function _toolCallPayloadToChatMessage(
       const argsStr = tc.slice('send_message_with_attachments('.length, tc.endsWith(')') ? -1 : undefined)
       const args = _safeJsonParse(argsStr)
       if (args && typeof args === 'object')
-        return { type: 'content', role: 'assistant', content: args.content || '', media: Array.isArray(args.media) ? args.media : [], conversation_id: cid }
+        return { type: 'content', role: 'assistant', content: args.content || '', media: Array.isArray(args.media) ? args.media : [], conversation_id: cid, model }
     }
     const name = extras?.tool_name || tc.split('(', 1)[0]
     return {
       type: 'tool_call', content: tc, conversation_id: cid,
       toolCallId: extras?.tool_call_id, toolName: name,
       toolArguments: _extractArgsFromContent(tc),
+      model,
     }
   }
 
@@ -190,7 +196,7 @@ function _toolCallPayloadToChatMessage(
   if (tc.name === 'send_message_with_attachments' && !tc.partial) {
     const args = tc.arguments as Record<string, unknown>
     if (args && typeof args === 'object')
-      return { type: 'content', role: 'assistant', content: (args.content as string) || '', media: Array.isArray(args.media) ? args.media as string[] : [], conversation_id: cid }
+      return { type: 'content', role: 'assistant', content: (args.content as string) || '', media: Array.isArray(args.media) ? args.media as string[] : [], conversation_id: cid, model }
   }
 
   const argsDict = (tc.arguments && typeof tc.arguments === 'object' && !Array.isArray(tc.arguments))
@@ -203,6 +209,7 @@ function _toolCallPayloadToChatMessage(
     toolCallId: tc.id || extras?.tool_call_id,
     toolName: tc.name || extras?.tool_name,
     toolArguments: argsDict,
+    model,
   }
 }
 
@@ -287,7 +294,32 @@ function _tryConvertMessageToolCall(entry: ChatMessage, cid: string): ChatMessag
     content: args.content || '',
     media: Array.isArray(args.media) ? args.media : [],
     conversation_id: cid,
+    model: entry.model,
+    time: entry.time,
   }
+}
+
+/** Indices of the last assistant content in each model turn (between user messages). */
+function _terminalAssistantContentIndices(msgs: ChatMessage[]): Set<number> {
+  const terminals = new Set<number>()
+  let turnStart = 0
+
+  for (let i = 0; i <= msgs.length; i++) {
+    const atEnd = i === msgs.length
+    const isUserBoundary = !atEnd && msgs[i].type === 'content' && msgs[i].role === 'user'
+
+    if (atEnd || isUserBoundary) {
+      for (let j = i - 1; j >= turnStart; j--) {
+        const m = msgs[j]
+        if (m.type === 'content' && m.role === 'assistant') {
+          terminals.add(j)
+          break
+        }
+      }
+      if (!atEnd) turnStart = i + 1
+    }
+  }
+  return terminals
 }
 
 // ── Composable ─────────────────────────────────────────────────────
@@ -351,6 +383,7 @@ export function useChat() {
     tc?: ToolCallPayload
     results?: ToolCallResultPayload[]
     subagentId?: string
+    model?: string
   }
 
   const _streamBuffer: BufferedDelta[] = []
@@ -383,6 +416,7 @@ export function useChat() {
 
   const messageGroups = computed<MessageGroup[]>(() => {
     const msgs = currentMessages.value
+    const terminals = _terminalAssistantContentIndices(msgs)
     const groups: MessageGroup[] = []
     const pendingOpen: Record<string, boolean> = {}
     let i = 0
@@ -432,7 +466,14 @@ export function useChat() {
           const prev = groups[groups.length - 1]
           if (prev.type === 'actions' && _openCache[prev.key] !== false && !_userOpenedKeys.has(prev.key)) pendingOpen[prev.key] = false
         }
-        groups.push({ type: 'content', role: m.role, content: m.content, media: m.media || [], time: m.time })
+        groups.push({
+          type: 'content',
+          role: m.role,
+          content: m.content,
+          media: m.media || [],
+          time: terminals.has(i) ? m.time : undefined,
+          model: terminals.has(i) ? m.model : undefined,
+        })
         i++
       }
     }
@@ -464,19 +505,20 @@ export function useChat() {
 
   // ── Streaming helpers ──────────────────────────────────────────────
 
-  function _appendStreamText(arr: ChatMessage[], type: ChatMessage['type'], role: string | undefined, text: string): void {
+  function _appendStreamText(arr: ChatMessage[], type: ChatMessage['type'], role: string | undefined, text: string, model?: string): void {
     if (!text) return
     const last = arr.length ? arr[arr.length - 1] : null
     if (last && last.type === type && (!role || last.role === role)) {
-      arr[arr.length - 1] = { ...last, content: (last.content || '') + text }
+      arr[arr.length - 1] = { ...last, content: (last.content || '') + text, model: model || last.model }
     } else {
       const entry: ChatMessage = { type, content: text }
       if (role) entry.role = role
+      if (model) entry.model = model
       arr.push(entry)
     }
   }
 
-  function _handleToolCallDelta(arr: ChatMessage[], cid: string, tc: ToolCallPayload): void {
+  function _handleToolCallDelta(arr: ChatMessage[], cid: string, tc: ToolCallPayload, model?: string): void {
     let current = _toolCallState.current
     const incomingId = tc.id || null
 
@@ -493,6 +535,7 @@ export function useChat() {
         conversation_id: cid,
         toolCallId: incomingId || undefined,
         toolName: tc.name || undefined,
+        model,
       })
     }
 
@@ -509,6 +552,7 @@ export function useChat() {
       toolCallId: current!.toolCallId || arr[current!.arrIdx].toolCallId,
       toolName: current!.name || arr[current!.arrIdx].toolName,
       toolArguments: argsDict,
+      model: model || arr[current!.arrIdx].model,
     }
 
     if (!tc.partial) {
@@ -521,6 +565,7 @@ export function useChat() {
             content: (args.content as string) || '',
             media: Array.isArray(args.media) ? args.media as string[] : [],
             conversation_id: cid,
+            model,
           }
         }
       }
@@ -592,6 +637,7 @@ export function useChat() {
         const converted = _toolCallPayloadToChatMessage(entry.content, cid, {
           tool_call_id: entry.toolCallId,
           tool_name: entry.toolName,
+          model: entry.model,
         })
         hydrated.push(converted || entry)
       } else if (entry.type === 'tool_call_results') {
@@ -604,8 +650,8 @@ export function useChat() {
     return hydrated
   }
 
-  function _handleSubagentToolCallDelta(sub: SubagentState, cid: string, tc: ToolCallPayload): void {
-    const chatMsg = _toolCallPayloadToChatMessage(tc, cid)
+  function _handleSubagentToolCallDelta(sub: SubagentState, cid: string, tc: ToolCallPayload, model?: string): void {
+    const chatMsg = _toolCallPayloadToChatMessage(tc, cid, { model })
     if (!chatMsg) return
     const lastIdx = sub.items.length - 1
     const last = lastIdx >= 0 ? sub.items[lastIdx] : null
@@ -691,22 +737,22 @@ export function useChat() {
         if (!messagesByConv.value[d.cid]) messagesByConv.value[d.cid] = []
         const arr = messagesByConv.value[d.cid]
         if (d.kind === 'thinking') {
-          _appendStreamText(arr, 'think', undefined, d.text || '')
+          _appendStreamText(arr, 'think', undefined, d.text || '', d.model)
         } else if (d.kind === 'content') {
-          _appendStreamText(arr, 'content', d.role || 'assistant', d.text || '')
+          _appendStreamText(arr, 'content', d.role || 'assistant', d.text || '', d.model)
         } else if (d.tc) {
-          _handleToolCallDelta(arr, d.cid, d.tc)
+          _handleToolCallDelta(arr, d.cid, d.tc, d.model)
         }
       } else if (d.subagentId) {
         const subs = subagents.value[d.cid] || []
         const sub = subs.find(s => s.id === d.subagentId)
         if (!sub) continue
         if (d.kind === 'subagent_thinking') {
-          _appendStreamText(sub.items, 'think', undefined, d.text || '')
+          _appendStreamText(sub.items, 'think', undefined, d.text || '', d.model)
         } else if (d.kind === 'subagent_content') {
-          _appendStreamText(sub.items, 'content', 'assistant', d.text || '')
+          _appendStreamText(sub.items, 'content', 'assistant', d.text || '', d.model)
         } else if (d.kind === 'subagent_tool_call' && d.tc) {
-          _handleSubagentToolCallDelta(sub, d.cid, d.tc)
+          _handleSubagentToolCallDelta(sub, d.cid, d.tc, d.model)
         } else if (d.kind === 'subagent_tool_call_results' && d.results) {
           _applyToolCallResults(sub.items, d.cid, d.results)
         }
@@ -779,19 +825,21 @@ export function useChat() {
         streamDone.value = false
 
         if (msg.type === 'thinking') {
-          _streamBuffer.push({ cid, kind: 'thinking', text: msg.content || '' })
+          _streamBuffer.push({ cid, kind: 'thinking', text: msg.content || '', model: msg.model })
         } else if (msg.type === 'content') {
           _streamBuffer.push({
             cid,
             kind: 'content',
             role: 'assistant',
             text: msg.content || '',
+            model: msg.model,
           })
         } else if (msg.type === 'tool_call') {
           _streamBuffer.push({
             cid,
             kind: 'tool_call',
             tc: msg.content as ToolCallPayload,
+            model: msg.model,
           })
         } else {
           const sdMsg = msg as {
@@ -799,6 +847,7 @@ export function useChat() {
             delta_type: string
             content?: string | ToolCallPayload
             results?: ToolCallResultPayload[]
+            model?: string
           }
           if (sdMsg.delta_type === 'thinking') {
             _streamBuffer.push({
@@ -806,6 +855,7 @@ export function useChat() {
               kind: 'subagent_thinking',
               subagentId: sdMsg.subagent_id,
               text: (sdMsg.content as string) || '',
+              model: sdMsg.model,
             })
           } else if (sdMsg.delta_type === 'content') {
             _streamBuffer.push({
@@ -813,6 +863,7 @@ export function useChat() {
               kind: 'subagent_content',
               subagentId: sdMsg.subagent_id,
               text: (sdMsg.content as string) || '',
+              model: sdMsg.model,
             })
           } else if (sdMsg.delta_type === 'tool_call') {
             const tcPayload = sdMsg.content as ToolCallPayload
@@ -822,6 +873,7 @@ export function useChat() {
                 kind: 'subagent_tool_call',
                 subagentId: sdMsg.subagent_id,
                 tc: tcPayload,
+                model: sdMsg.model,
               })
             }
           } else if (sdMsg.delta_type === 'tool_call_results') {
@@ -903,6 +955,7 @@ export function useChat() {
           const chatMsg = _toolCallPayloadToChatMessage(tc, cid, {
             tool_call_id: (msg as { tool_call_id?: string }).tool_call_id,
             tool_name: (msg as { tool_name?: string }).tool_name,
+            model: (msg as { model?: string }).model,
           })
           if (chatMsg) {
             if (chatMsg.type === 'content') {

@@ -13,7 +13,7 @@ import typing as t
 from lightsear._encoding import decode_html_body
 from lightsear.runtime import ensure_chromium_alive, get_pool
 
-FetchMode = t.Literal["markdown", "text"]
+FetchMode = t.Literal["markdown", "html"]
 
 
 def web_fetch(
@@ -29,11 +29,13 @@ def web_fetch(
 
     :param url: URL to fetch.
     :param mode: ``'markdown'`` (default) returns markdown rendered from the
-        cleaned DOM. ``'text'`` returns the cleaned HTML directly.
+        cleaned DOM — compact and cheap. ``'html'`` returns the cleaned HTML
+        directly, which is noticeably more verbose and costs more tokens; only
+        ask for it when you specifically need raw markup.
     :param wait: Extra milliseconds to wait for JS rendering before scraping.
     """
-    if mode not in {"markdown", "text"}:
-        raise ValueError("mode must be 'markdown' or 'text'")
+    if mode not in {"markdown", "html"}:
+        raise ValueError("mode must be 'markdown' or 'html'")
 
     ensure_chromium_alive()
     response = get_pool().submit(_run_web_fetch, url, wait).result()

@@ -46,7 +46,7 @@ def test_web_fetch_uses_session_pool_and_markdownify(monkeypatch: pytest.MonkeyP
     assert "<h1>mock page</h1>" in calls["markdownify"]
 
 
-def test_web_fetch_text_removes_css_and_js(monkeypatch: pytest.MonkeyPatch):
+def test_web_fetch_html_removes_css_and_js(monkeypatch: pytest.MonkeyPatch):
     class FakeFuture:
         def __init__(self, value):
             self._value = value
@@ -72,7 +72,7 @@ def test_web_fetch_text_removes_css_and_js(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(lightsear_runtime, "_pool", FakePool())
     monkeypatch.setattr(lightsear_runtime, "ensure_chromium_alive", lambda: None)
 
-    content = lightsear.web_fetch("https://example.com", mode="text")
+    content = lightsear.web_fetch("https://example.com", mode="html")
 
     assert "<h1>Title</h1>" in content
     assert "<p>Body</p>" in content
@@ -81,8 +81,8 @@ def test_web_fetch_text_removes_css_and_js(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_web_fetch_rejects_unknown_mode():
-    with pytest.raises(ValueError, match="mode must be 'markdown' or 'text'"):
-        lightsear.web_fetch("https://example.com", mode="html")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="mode must be 'markdown' or 'html'"):
+        lightsear.web_fetch("https://example.com", mode="text")  # type: ignore[arg-type]
 
 
 def test_decode_html_body_uses_declared_chinese_encoding():

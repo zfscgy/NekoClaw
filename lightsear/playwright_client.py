@@ -136,6 +136,15 @@ class _AsyncBrowserRuntime:
                     state=wait_selector_state,
                     timeout=timeout,
                 )
+            # Selector "attached" only means the container exists — some SERPs
+            # (e.g. Bing) still redirect/re-render themselves shortly after.
+            # Wait for the network to settle first; if it never goes idle
+            # (long-polling, analytics, ...) fall back to a flat 3s wait so we
+            # still capture the settled content instead of a half-loaded page.
+            try:
+                await page.wait_for_load_state("networkidle", timeout=3_000)
+            except PlaywrightTimeoutError:
+                await page.wait_for_timeout(3_000)
             if wait and wait > 0:
                 await page.wait_for_timeout(wait)
             html_body = (await page.content()).encode("utf-8")

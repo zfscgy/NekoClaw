@@ -383,6 +383,17 @@ html, body {
 }
 .action-details[open] .step-count { color: var(--accent); }
 
+.action-summary .action-model {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .action-items {
   border: 1px solid var(--tool-border);
   border-radius: 0 0 var(--radius-sm) var(--radius-sm);
@@ -990,6 +1001,19 @@ html.light .msg-bubble pre code {
   opacity: 0.75;
   letter-spacing: 0.02em;
   user-select: none;
+}
+
+.msg-model {
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  letter-spacing: 0.02em;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  user-select: text;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .btn-theme {

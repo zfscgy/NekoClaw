@@ -25,6 +25,7 @@ from nekoclaw.agent.tools.spawn import CallSubagentTool
 from nekoclaw.agent.tools.web import WebFetchTool, WebSearchTool
 from nekoclaw.bus.events import InboundMessage, OutboundMessage
 from nekoclaw.bus.queue import MessageBus
+from nekoclaw.config.schema import resolve_model_tag
 from nekoclaw.providers.base import LLMProvider, StreamDelta, ToolCallRequest, ToolCallResult, delta_to_openai, is_error_content
 from nekoclaw.session.manager import Session, SessionManager
 
@@ -214,7 +215,7 @@ class AgentLoop:
         for cls in (ReadFileTool, WriteFileTool, EditFileTool, ListDirTool):
             self.tools.register(cls(workspace=self.workspace, allowed_dir=allowed_dir))
         self.tools.register(ExecTool(working_dir=str(self.workspace)))
-        self.tools.register(WebSearchTool(max_results=10))
+        self.tools.register(WebSearchTool(max_results=20))
         self.tools.register(WebFetchTool())
         self.tools.register(MessageTool(send_callback=self.bus.publish_outbound))
         self.tools.register(CallSubagentTool(manager=self.subagents))
@@ -494,6 +495,7 @@ class AgentLoop:
                             ))
 
             iteration += 1
+            model_tag = resolve_model_tag(self.model)
 
             openai_messages = delta_to_openai(messages)
             tools_arg = self.tools.get_definitions()
@@ -544,6 +546,9 @@ class AgentLoop:
                     stopped_mid_stream = True
                     break
 
+                if delta.type in ("thinking", "content", "tool_call"):
+                    delta.model = model_tag
+
                 await self.bus.publish_outbound(OutboundMessage(
                     channel=channel, chat_id=chat_id,
                     type="delta", msg=delta,
@@ -582,7 +587,7 @@ class AgentLoop:
             response_thinking = "".join(thinking_chunks).strip() or None
 
             if response_thinking:
-                messages.append(StreamDelta(type="thinking", content=response_thinking))
+                messages.append(StreamDelta(type="thinking", content=response_thinking, model=model_tag))
 
             if stopped_mid_stream:
                 # Treat whatever streamed so far as a finished response: store
@@ -593,10 +598,11 @@ class AgentLoop:
                         type="content",
                         content=response_content,
                         time=datetime.now(timezone.utc).isoformat(),
+                        model=model_tag,
                     ))
                 if response_tool_calls:
                     for tc in response_tool_calls:
-                        messages.append(StreamDelta(type="tool_call", content=tc))
+                        messages.append(StreamDelta(type="tool_call", content=tc, model=model_tag))
                     messages.append(StreamDelta(
                         type="tool_call_results",
                         content=[
@@ -614,10 +620,10 @@ class AgentLoop:
 
             if response_tool_calls:
                 if response_content:
-                    messages.append(StreamDelta(type="content", content=response_content))
+                    messages.append(StreamDelta(type="content", content=response_content, model=model_tag))
 
                 for tc in response_tool_calls:
-                    messages.append(StreamDelta(type="tool_call", content=tc))
+                    messages.append(StreamDelta(type="tool_call", content=tc, model=model_tag))
 
                 tool_results: list[ToolCallResult] = []
                 for tool_call in response_tool_calls:
@@ -673,6 +679,7 @@ class AgentLoop:
                         type="content",
                         content=response_content,
                         time=datetime.now(timezone.utc).isoformat(),
+                        model=model_tag,
                     ))
                 final_content = response_content
                 break
@@ -925,6 +932,10 @@ class AgentLoop:
                     parts = content.split("\n\n", 1)
                     if len(parts) > 1 and parts[1].strip():
                         content = parts[1]
+                    elif delta.media:
+                        # Media-only turn (no text): keep an empty-text delta so
+                        # the attachment is replayed in the UI on reload.
+                        content = ""
                     else:
                         continue
                 if isinstance(content, list):

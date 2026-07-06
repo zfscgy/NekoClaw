@@ -1,17 +1,13 @@
 """Context builder for assembling agent prompts."""
 
-import base64
-import mimetypes
 import platform
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from nekoclaw.agent.memory import MemoryStore
 from nekoclaw.agent.skills import SkillsLoader
 from nekoclaw.providers.base import StreamDelta
-from nekoclaw.utils.helpers import detect_image_mime
 
 
 class ContextBuilder:
@@ -131,16 +127,13 @@ Reply directly with text for conversations. Only use the 'send_message_with_atta
         """Build the complete message list as StreamDeltas.
 
         The returned list is the canonical representation used throughout the
-        agent loop.  Conversion to OpenAI format happens only at the provider
+        agent loop.  The user delta stores the raw user text plus the local
+        media paths (in ``media``); media is only expanded into provider-format
+        content (inline images / ``[attached file: …]`` refs) at the provider
         boundary via ``delta_to_openai``.
         """
         runtime_ctx = self._build_runtime_context(channel, chat_id)
-        user_content = self._build_user_content(current_message, media)
-
-        if isinstance(user_content, str):
-            merged = f"{runtime_ctx}\n\n{user_content}"
-        else:
-            merged = [{"type": "text", "text": runtime_ctx}] + user_content
+        merged = f"{runtime_ctx}\n\n{current_message}" if current_message else runtime_ctx
 
         processed = self._process_history(history)
 
@@ -150,6 +143,7 @@ Reply directly with text for conversations. Only use the 'send_message_with_atta
             StreamDelta(
                 type="user",
                 content=merged,
+                media=list(media) if media else [],
                 time=datetime.now(timezone.utc).isoformat(),
             ),
         ]
@@ -178,42 +172,4 @@ Reply directly with text for conversations. Only use the 'send_message_with_atta
             else:
                 out.append(delta)
         return out
-
-    def _build_user_content(self, text: str, media: list[str] | None) -> str | list[dict[str, Any]]:
-        """Build user message content with optional media attachments.
-
-        Images are inlined as base64 data URIs.  Other file types are referenced
-        as ``file://`` URIs appended to the text portion of the message.
-        """
-        if not media:
-            return text
-
-        image_parts: list[dict[str, Any]] = []
-        file_refs: list[str] = []
-
-        for path in media:
-            p = Path(path)
-            if not p.is_file():
-                continue
-            raw = p.read_bytes()
-            # Detect real MIME type from magic bytes; fallback to filename guess
-            mime = detect_image_mime(raw) or mimetypes.guess_type(path)[0]
-            if mime and mime.startswith("image/"):
-                b64 = base64.b64encode(raw).decode()
-                image_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
-            else:
-                file_refs.append(p.resolve().as_uri())
-
-        if not image_parts and not file_refs:
-            return text
-
-        text_part = text
-        if file_refs:
-            refs = "\n".join(f"[attached file: {uri}]" for uri in file_refs)
-            text_part = f"{refs}\n\n{text}" if text else refs
-
-        if not image_parts:
-            return text_part
-
-        return image_parts + [{"type": "text", "text": text_part}]
 

@@ -180,6 +180,24 @@ def split_qualified_model(qualified: str) -> tuple[str | None, str]:
     return name, model_id
 
 
+def resolve_model_tag(qualified: str) -> str:
+    """Return a ``providerName:modelId`` tag for a qualified model string.
+
+    Used to stamp persisted assistant deltas with the model that produced them.
+    Resolution prefers the global config (so an unqualified id picks up the
+    active provider name); it falls back to a best-effort split when the config
+    is unavailable.
+    """
+    try:
+        from nekoclaw.config.manager import get_global_config
+
+        resolved = get_global_config().providers.resolve(qualified)
+        return f"{resolved.provider_name}:{resolved.model_id}"
+    except Exception:
+        name, model_id = split_qualified_model(qualified)
+        return f"{name}:{model_id}" if name else (qualified or "")
+
+
 class ProvidersConfig(Base):
     """Configuration for LLM providers.
 
@@ -247,7 +265,7 @@ class WebSearchEnginesConfig(Base):
 class WebSearchConfig(Base):
     """Web search tool configuration."""
 
-    max_results: int = 10
+    max_results: int = 20
     engines: WebSearchEnginesConfig = Field(default_factory=WebSearchEnginesConfig)
 
 

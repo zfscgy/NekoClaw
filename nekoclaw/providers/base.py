@@ -1,9 +1,14 @@
 """Base LLM provider interface."""
 
+import base64
 import json
+import mimetypes
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, AsyncIterator, Literal
+
+from nekoclaw.utils.helpers import detect_image_mime
 
 
 @dataclass
@@ -182,6 +187,10 @@ class StreamDelta:
     # chunks), "user", "tool_call_results", and "subagent_ref". May be ``None``
     # for transient deltas (streaming chunks, "thinking", "system", "tool_call").
     time: str | None = None
+    # ``providerName:modelId`` tag identifying the model that produced this
+    # delta. Only set on assistant-generated deltas ("thinking", "content",
+    # "tool_call"); ``None`` for user/system/tool_call_results/subagent_ref.
+    model: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dict for session storage."""
@@ -194,6 +203,8 @@ class StreamDelta:
                     "name": tc.name, "arguments": tc.arguments,
                 },
             }
+            if self.model:
+                d["model"] = self.model
             if self.time:
                 d["time"] = self.time
             return d
@@ -211,6 +222,8 @@ class StreamDelta:
         d = {"type": self.type, "content": self.content}
         if self.media:
             d["media"] = self.media
+        if self.model:
+            d["model"] = self.model
         if self.time:
             d["time"] = self.time
         return d
@@ -235,7 +248,7 @@ class StreamDelta:
                 for r in raw if isinstance(r, dict)
             ]
         media = data.get("media") or []
-        return cls(type=dtype, content=raw, media=media, time=data.get("time"))
+        return cls(type=dtype, content=raw, media=media, time=data.get("time"), model=data.get("model"))
 
 
 def _strip_images_from_content(content: Any) -> Any:
@@ -254,6 +267,57 @@ def _strip_images_from_content(content: Any) -> Any:
         else:
             out.append(part)
     return out
+
+
+def _build_user_content(content: Any, media: list[str], image_input: bool) -> Any:
+    """Expand a user delta's raw text + media paths into OpenAI message content.
+
+    The canonical user delta stores only the user's text in ``content`` and the
+    local filesystem paths in ``media``.  Provider-format content is rebuilt
+    here at the boundary: images are inlined as base64 data URIs (or replaced
+    with a ``[image]`` placeholder when ``image_input`` is ``False``), and other
+    file types are referenced as ``[attached file: <uri>]`` lines prepended to
+    the text.
+
+    When ``content`` is already a list (legacy multimodal payloads) it is passed
+    through, only stripping images if the model cannot accept them.
+    """
+    text = content if isinstance(content, str) else ""
+    if not media:
+        return content if isinstance(content, str) else (
+            content if image_input else _strip_images_from_content(content)
+        )
+
+    image_parts: list[dict[str, Any]] = []
+    file_refs: list[str] = []
+    for path in media:
+        p = Path(path)
+        if not p.is_file():
+            continue
+        raw = p.read_bytes()
+        # Detect real MIME type from magic bytes; fallback to filename guess.
+        mime = detect_image_mime(raw) or mimetypes.guess_type(path)[0]
+        if mime and mime.startswith("image/"):
+            if image_input:
+                b64 = base64.b64encode(raw).decode()
+                image_parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+            else:
+                file_refs.append(None)  # placeholder marker; rendered as [image]
+        else:
+            file_refs.append(p.resolve().as_uri())
+
+    ref_lines = [
+        "[image]" if uri is None else f"[attached file: {uri}]"
+        for uri in file_refs
+    ]
+    text_part = text
+    if ref_lines:
+        refs = "\n".join(ref_lines)
+        text_part = f"{refs}\n\n{text}" if text else refs
+
+    if not image_parts:
+        return text_part
+    return image_parts + [{"type": "text", "text": text_part}]
 
 
 def _active_model_capabilities() -> tuple[bool, bool]:
@@ -346,7 +410,7 @@ def delta_to_openai(
             messages.append({"role": "system", "content": delta.content})
         elif delta.type == "user":
             flush_assistant()
-            content = delta.content if image_input else _strip_images_from_content(delta.content)
+            content = _build_user_content(delta.content, delta.media, image_input)
             messages.append({"role": "user", "content": content})
         elif delta.type == "thinking":
             if include_reasoning and isinstance(delta.content, str) and delta.content.strip():

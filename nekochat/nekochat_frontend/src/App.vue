@@ -67,6 +67,7 @@
                   :role="group.role"
                   :content="group.content"
                   :media="group.media"
+                  :model="group.model"
                   :append-cursor="group.appendCursor"
                   :stream-status="group.streamStatus"
                   :time="group.time"

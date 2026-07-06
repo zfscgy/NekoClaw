@@ -37,5 +37,5 @@ def lightsear_search(text: str, max_results: int = None) -> list[dict[str, str]]
     ]
 
 
-def lightsear_fetch(url: str, mode: Literal["markdown", "text"] = "markdown") -> str:
+def lightsear_fetch(url: str, mode: Literal["markdown", "html"] = "markdown") -> str:
     return lightsear.web_fetch(url, mode=mode)

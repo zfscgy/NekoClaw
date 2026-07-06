@@ -81,8 +81,8 @@ one engine appear first (sorted by hit count descending).
 # Returns cleaned page content as Markdown (default)
 text = lightsear.web_fetch("https://example.com")
 
-# Plain text
-text = lightsear.web_fetch("https://example.com", mode="text")
+# Cleaned raw HTML — more verbose, costs noticeably more tokens
+text = lightsear.web_fetch("https://example.com", mode="html")
 
 # Wait longer for JS-heavy pages (milliseconds)
 text = lightsear.web_fetch("https://example.com", wait=12_000)
