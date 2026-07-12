@@ -3,8 +3,9 @@
 Optional (recommended add-on) skills are no longer vendored in the repository.
 They live in a separate upstream project and are fetched at build time by this
 script. The packaging step (``build/install.py``) then bundles whatever is in
-``resources/skills/skills`` into the app, and on first launch the gateway copies
-those skills into the user's workspace (see
+``resources/skills/skills`` into the app, and on every launch the gateway syncs
+those skills into the user's workspace, refreshing already-installed copies
+in place when the bundled content changes (see
 ``nekoclaw.startup.sync_optional_skills``).
 
 Usage::

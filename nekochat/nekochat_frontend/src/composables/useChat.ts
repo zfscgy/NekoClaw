@@ -1128,7 +1128,16 @@ export function useChat() {
 
     inputText.value = ''
     isTyping.value = true
-    streamActive.value = false
+    // Flip the "generating" status on immediately so the just-sent user
+    // bubble picks up its spinner right away. Without this there's a brief
+    // window (until the backend's `stream_start` ack arrives) where no
+    // status is attached to anything, which used to be filled by a
+    // separate assistant-styled "Thinking…" placeholder — that placeholder
+    // then vanished the instant `stream_start` landed, reading as a flash
+    // of an assistant bubble that immediately morphs into the user-side
+    // indicator. Attaching the spinner to the user message from the start
+    // skips that flash entirely.
+    streamActive.value = true
     streamDone.value = false
 
     const cid = activeId.value
@@ -1158,7 +1167,7 @@ export function useChat() {
   async function sendCommand(cmd: string): Promise<void> {
     if (!activeId.value) return
     isTyping.value = true
-    streamActive.value = false
+    streamActive.value = true
     streamDone.value = false
     const cid = activeId.value
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1200,6 +1209,14 @@ export function useChat() {
     el.scrollTo({ top: el.scrollHeight, behavior: 'auto' })
   }
 
+  // How many extra animation-frame passes to re-pin for after the initial
+  // scroll. A single follow-up frame isn't always enough — e.g. an <img>
+  // that decodes a frame or two after layout, or a code block whose
+  // highlighting reflows just after paint — so we keep nudging the
+  // scroll position to the (possibly still-growing) bottom for a few
+  // frames instead of a single fire-and-forget correction.
+  const SCROLL_SETTLE_FRAMES = 6
+
   function scrollToBottom(force = false): void {
     if (force) _userScrolledUp = false
     nextTick(() => {
@@ -1207,15 +1224,17 @@ export function useChat() {
       if (!el) return
       if (!force && _userScrolledUp) return
       _pinToBottom(el)
-      // A second pass on the next animation frame catches layout shifts
-      // that finalize after Vue's flush — e.g. markdown-rendered code
-      // blocks, late font metrics, or images that just decoded.
-      requestAnimationFrame(() => {
+
+      let framesLeft = SCROLL_SETTLE_FRAMES
+      const step = () => {
         const cur = messagesEl.value
         if (!cur) return
         if (!force && _userScrolledUp) return
         _pinToBottom(cur)
-      })
+        framesLeft--
+        if (framesLeft > 0) requestAnimationFrame(step)
+      }
+      requestAnimationFrame(step)
     })
   }
 
@@ -1223,6 +1242,18 @@ export function useChat() {
     const el = messagesEl.value
     if (!el) return
     _userScrolledUp = !_isAtBottom(el)
+  }
+
+  // <img> `load` events don't bubble, but a capturing listener on an
+  // ancestor still observes them during the capture phase. Attachment
+  // images/media can finish decoding well after the initial scroll pass
+  // (especially over a slow connection), growing `.messages-inner` after
+  // our rAF settle loop above has already given up — without this, the
+  // viewport is left short of the true bottom until the next unrelated
+  // message triggers another scroll.
+  function _onMediaLoad(e: Event): void {
+    if (!(e.target instanceof HTMLImageElement)) return
+    scrollToBottom()
   }
 
   function _ensureResizeObserver(): void {
@@ -1267,6 +1298,7 @@ export function useChat() {
       if (el) {
         _scrollHandler = _onMessagesScroll
         el.addEventListener('scroll', _scrollHandler, { passive: true })
+        el.addEventListener('load', _onMediaLoad, { capture: true, passive: true })
       }
       _observeMessagesInner()
     })
@@ -1284,6 +1316,7 @@ export function useChat() {
     window.removeEventListener('keydown', onKeydown)
     if (messagesEl.value && _scrollHandler) {
       messagesEl.value.removeEventListener('scroll', _scrollHandler)
+      messagesEl.value.removeEventListener('load', _onMediaLoad, { capture: true })
     }
     _scrollHandler = null
     if (_resizeObserver) {

@@ -425,6 +425,24 @@ html, body {
   background: rgba(125, 180, 255, 0.14);
 }
 
+/* ── [func][arg=val ...] inline tool call display ──────────────────── */
+.tool-call-inline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.tool-bracket { color: var(--text-muted); opacity: 0.6; }
+.tool-call-inline .tool-name { color: #d2a8ff; font-weight: 600; }
+.tool-args {
+  color: #79c0ff;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+html.light .tool-call-inline .tool-name { color: #6f42c1; }
+html.light .tool-args { color: #0969da; }
+
 .tool-result-card {
   max-width: 760px;
   max-height: calc(100vh - 48px);
@@ -508,29 +526,36 @@ html.light .tool-arg-value { color: #0969da; }
 }
 .action-item.is-progress {
   background: var(--progress-bg);
-  color: var(--text-muted);
-  font-style: italic;
 }
-.action-item .reasoning-response {
+
+/* ── Reasoning block: dimmed text clamped to ~4 lines with its own
+   scrollbar (used for both live "thinking" deltas and the final
+   reasoning_response markdown) ──────────────────────────────────────── */
+.reasoning-block {
   display: block;
   width: 100%;
-  font-style: normal;
-  color: var(--text);
-  font-size: 13px;
+  max-height: 6.4em; /* ~4 lines at line-height 1.6 */
+  overflow-y: auto;
+  color: var(--text-muted);
+  opacity: 0.82;
+  font-size: 12.5px;
   line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
-.action-item .reasoning-response p { margin: 0 0 0.5em; }
-.action-item .reasoning-response p:last-child { margin-bottom: 0; }
-.action-item .reasoning-response ul,
-.action-item .reasoning-response ol { margin: 0.25em 0 0.5em 1.2em; padding: 0; }
-.action-item .reasoning-response code {
+.reasoning-block.is-markdown { white-space: normal; }
+.reasoning-block p { margin: 0 0 0.5em; }
+.reasoning-block p:last-child { margin-bottom: 0; }
+.reasoning-block ul,
+.reasoning-block ol { margin: 0.25em 0 0.5em 1.2em; padding: 0; }
+.reasoning-block code {
   background: rgba(0,0,0,0.2);
   border-radius: 3px;
   padding: 1px 4px;
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 11px;
 }
-.action-item .reasoning-response pre {
+.reasoning-block pre {
   background: #111;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -539,16 +564,16 @@ html.light .tool-arg-value { color: #0969da; }
   font-size: 11px;
   margin: 6px 0;
 }
-.action-item .reasoning-response pre code,
-html.light .action-item .reasoning-response pre code {
+.reasoning-block pre code,
+html.light .reasoning-block pre code {
   background: none;
   padding: 0;
   border-radius: 0;
   font-size: inherit;
   display: block;
 }
-html.light .action-item .reasoning-response pre { background: #f0f0f0; }
-html.light .action-item .reasoning-response code { background: rgba(0,0,0,0.06); }
+html.light .reasoning-block pre { background: #f0f0f0; }
+html.light .reasoning-block code { background: rgba(0,0,0,0.06); }
 
 /* ── Subagent status line ───────────────────────────────── */
 .subagent-line-row {
@@ -1298,31 +1323,6 @@ html.light .msg-bubble pre code {
   gap: 8px;
 }
 
-.config-section {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: stretch;
-  gap: 10px 12px;
-}
-
-/* By default every field spans the full row; boolean fields shrink so several
-   checkboxes pack into a compact grid that wraps. */
-.config-section > .config-node { flex: 1 1 100%; min-width: 0; }
-.config-section > .config-node--bool { flex: 1 1 200px; }
-
-.config-section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: 0.02em;
-}
-
-.config-hint {
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.5;
-}
-
 .config-field {
   display: flex;
   flex-direction: column;
@@ -1330,30 +1330,91 @@ html.light .msg-bubble pre code {
 }
 
 /* Primitive fields (string/number/enum) put the label and input on one row:
-   "label: [input]". The description, if any, wraps onto its own line below. */
-label.config-field:not(.config-field-inline) {
-  flex-direction: row;
-  flex-wrap: wrap;
+   "label: [input]". The label column is a fixed width so inputs across
+   different fields (whose labels vary in length) line up on the same
+   vertical edge. Descriptions move into a hover/focus tooltip on a "?"
+   badge instead of a wrapped paragraph, so long copy can't stretch rows. */
+.config-field:not(.config-field-inline) {
+  display: grid;
+  grid-template-columns: var(--cfg-label-w, 140px) minmax(0, 1fr);
   align-items: center;
   gap: 4px 10px;
 }
-label.config-field:not(.config-field-inline) > .config-label {
-  flex: 0 0 auto;
-  max-width: 45%;
-  order: 0;
+.config-field:not(.config-field-inline) > .config-label-wrap {
+  grid-column: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
 }
-label.config-field:not(.config-field-inline) > .config-label::after {
+.config-field:not(.config-field-inline) > .config-label-wrap > .config-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.config-field:not(.config-field-inline) > .config-label-wrap > .config-label::after {
   content: ':';
 }
-label.config-field:not(.config-field-inline) > .config-input {
-  flex: 1 1 200px;
+.config-field:not(.config-field-inline) > .config-input,
+.config-field:not(.config-field-inline) > .secret-input,
+.config-field:not(.config-field-inline) > .tag-list-input,
+.config-field:not(.config-field-inline) > select.config-input {
+  grid-column: 2;
   min-width: 0;
-  order: 1;
 }
-label.config-field:not(.config-field-inline) > .config-hint {
-  flex: 1 1 100%;
-  order: 2;
+
+/* "?" help badge that reveals the field's hint text in a floating tooltip
+   on hover/focus, instead of a permanent line of copy under every field. */
+.cfg-help {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
 }
+.cfg-help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.22);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  user-select: none;
+}
+.cfg-help:hover .cfg-help-icon,
+.cfg-help:focus-visible .cfg-help-icon,
+.cfg-help:focus-within .cfg-help-icon {
+  background: var(--accent);
+  color: #fff;
+}
+/* Teleported to <body> (see FieldRow.vue) and positioned via inline
+   top/left from getBoundingClientRect, so it always renders above every
+   other element — no ancestor overflow/stacking-context can clip or bury
+   it the way an in-place absolutely-positioned tooltip could. */
+.cfg-help-tip-float {
+  position: fixed;
+  z-index: 4000;
+  width: 240px;
+  max-width: min(240px, 60vw);
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.28);
+  pointer-events: none;
+}
+html.light .cfg-help-tip-float { background: #fff; box-shadow: 0 6px 18px rgba(0,0,0,0.14); }
 
 .config-label {
   font-size: 11px;
@@ -1442,78 +1503,15 @@ label.config-field:not(.config-field-inline) > .config-hint {
 }
 
 .config-pane {
-  padding: 18px 22px 4px;
+  padding: 18px 22px 20px;
   overflow-y: auto;
   min-width: 0;
-  --list-accent: var(--accent);
-}
-
-/* Each top-level card cycles through a distinct accent color so adjacent
-   top-level lists are easy to tell apart. */
-.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+1) { --list-accent: #c07090; }
-.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+2) { --list-accent: #6f9bd0; }
-.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+3) { --list-accent: #5fb89a; }
-.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+4) { --list-accent: #c9a45f; }
-.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+5) { --list-accent: #a78bd0; }
-.config-pane > .config-node.is-root > .config-section > .config-node:nth-child(6n+6) { --list-accent: #cf7f6f; }
-
-.config-node { display: block; }
-.config-node.is-root { display: block; }
-
-.config-sub-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: 0.01em;
-  margin: 0 0 10px;
-  padding-bottom: 6px;
-  border-bottom: 1px dashed var(--border);
-}
-
-.config-node.is-root > .config-sub-title:first-child { display: none; }
-
-/* First-level cards inside a tab: alternating backgrounds for visual separation */
-.config-pane > .config-node.is-root > .config-section {
-  gap: 10px;
-}
-
-.config-pane > .config-node.is-root > .config-section > .config-node {
-  background: color-mix(in srgb, var(--list-accent) 10%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--list-accent) 28%, var(--border));
-  border-radius: var(--radius-sm);
-  padding: 14px 16px;
-}
-
-html.light .config-pane > .config-node.is-root > .config-section > .config-node {
-  background: color-mix(in srgb, var(--list-accent) 12%, #ffffff);
-  border-color: color-mix(in srgb, var(--list-accent) 30%, var(--border));
 }
 
 .config-field-inline {
   flex-direction: row;
   align-items: center;
   gap: 9px;
-}
-
-/* Compact bordered cell so booleans read as grid items, not full-width rows */
-.config-node--bool .config-field-inline {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px 11px;
-  height: 100%;
-  cursor: pointer;
-  transition: border-color .12s, background .12s;
-}
-.config-node--bool .config-field-inline:hover { border-color: var(--accent); }
-html.light .config-node--bool .config-field-inline { background: #f4f4f4; }
-
-/* A boolean that is itself a top-level card already has its own frame —
-   don't draw a second box inside it. */
-.config-pane > .config-node.is-root > .config-section > .config-node--bool .config-field-inline {
-  background: transparent;
-  border: none;
-  padding: 0;
 }
 
 .config-label-inline {
@@ -1535,15 +1533,6 @@ html.light .config-node--bool .config-field-inline { background: #f4f4f4; }
   white-space: nowrap;
 }
 
-.config-map-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.config-map-header .config-label { flex: 1; }
-
 .btn-mini {
   padding: 4px 10px;
   font-size: 11px;
@@ -1555,69 +1544,6 @@ html.light .config-node--bool .config-field-inline { background: #f4f4f4; }
   font-style: italic;
   padding: 6px 0;
 }
-
-.config-map-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.config-map-entry {
-  background: var(--surface);
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.config-map-key-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 6px;
-  align-items: center;
-}
-
-.config-map-key {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-
-.config-map-value-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.config-map-value-nested {
-  padding: 4px 0 0 6px;
-  border-left: none;
-  margin-left: 2px;
-}
-
-.config-array-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.config-array-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 6px;
-  align-items: center;
-}
-
-/* Shared header for list-like fields (arrays + maps) */
-.config-list-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.config-list-spacer { flex: 1; }
 
 .config-count {
   display: inline-flex;
@@ -1635,87 +1561,290 @@ html.light .config-node--bool .config-field-inline { background: #f4f4f4; }
   line-height: 1;
 }
 
-/* Cards for arrays of objects (e.g. provider models) */
-.config-card-list {
+.config-list-spacer { flex: 1; }
+
+/* ── Secret input (password toggle) ─────────────────────────────────── */
+.secret-input {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.secret-input .config-input {
+  flex: 1;
+  min-width: 0;
+  padding-right: 34px;
+}
+.secret-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: color .12s, background .12s;
+}
+.secret-toggle:hover { color: var(--text); background: var(--surface2); }
+
+/* ── Tag list input (chips) ─────────────────────────────────────────── */
+.tag-list-input { min-width: 0; }
+.tag-list-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 5px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: border-color .12s;
+}
+.tag-list-chips:focus-within { border-color: var(--accent); }
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 2px 4px 2px 9px;
+  font-size: 12px;
+  color: var(--text);
+  max-width: 100%;
+}
+.tag-chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.tag-chip-remove {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: color .12s, background .12s;
+}
+.tag-chip-remove:hover { color: var(--danger); background: rgba(224, 92, 92, 0.12); }
+.tag-list-add {
+  flex: 1 1 80px;
+  min-width: 60px;
+  border: none;
+  background: none;
+  outline: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 3px 4px;
+}
+.tag-list-add::placeholder { color: var(--text-muted); }
+
+/* ── Key/value editor (headers, env vars, extra headers) ────────────── */
+.kv-editor {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 6px;
+  gap: 6px;
 }
 
-.config-card {
+/* ── Toggle switch ───────────────────────────────────────────────────── */
+.toggle-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  user-select: none;
+  flex-shrink: 0;
+}
+.toggle-switch input { display: none; }
+.toggle-track {
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  position: relative;
+  transition: background .15s, border-color .15s;
+  flex-shrink: 0;
+}
+.toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform .15s, background .15s;
+}
+.toggle-switch input:checked + .toggle-track { background: var(--accent-dim); border-color: var(--accent); }
+.toggle-switch input:checked + .toggle-track .toggle-thumb { transform: translateX(14px); background: var(--accent); }
+.toggle-switch.disabled { opacity: 0.5; cursor: not-allowed; }
+.toggle-label {
+  font-size: 12.5px;
+  color: var(--text);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* ── Redesigned config tabs (hand-built per-section UI) ─────────────── */
+.cfg-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.cfg-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: opacity .15s;
+}
+.cfg-section.is-disabled { opacity: 0.6; }
+
+.cfg-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cfg-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+  background: var(--cfg-accent, var(--accent));
+}
+
+.cfg-section-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.01em;
+  flex: 1;
+  min-width: 0;
+}
+
+.cfg-section-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-top: -4px;
+}
+
+.cfg-subhead {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.cfg-section > .cfg-subhead:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+
+/* One field per row — never pack two text inputs side by side, so long
+   values and hint badges always have the full row width to work with. */
+.cfg-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.cfg-grid > .config-field { min-width: 0; }
+.cfg-grid.cfg-grid--tight { --cfg-label-w: 100px; gap: 7px; }
+
+.cfg-toggle-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cfg-list-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cfg-list-head .cfg-section-title { flex: unset; }
+
+.cfg-item-card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+html.light .cfg-item-card { background: #f7f7f7; }
+
+.cfg-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cfg-item-name-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  border-color: transparent;
+  background: transparent;
+  padding-left: 2px;
+}
+.cfg-item-name-input:hover { border-color: var(--border); }
+
+.cfg-item-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cfg-empty-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 10px 0;
+  text-align: center;
+}
+
+.cfg-model-card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 10px 12px;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-html.light .config-card { background: #ffffff; }
-
-.config-card-head {
-  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px dashed var(--border);
+  gap: 8px 12px;
 }
-
-.config-card-title {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text);
-  word-break: break-all;
-}
-
-/* ── List level emphasis + zebra item backgrounds ─────────────────── */
-
-/* Zebra striping so adjacent items are visually distinct */
-.config-card-list > .config-card:nth-child(odd),
-.config-map-list > .config-map-entry:nth-child(odd) { background: var(--surface); }
-.config-card-list > .config-card:nth-child(even),
-.config-map-list > .config-map-entry:nth-child(even) { background: var(--surface2); }
-html.light .config-card-list > .config-card:nth-child(odd),
-html.light .config-map-list > .config-map-entry:nth-child(odd) { background: #ffffff; }
-html.light .config-card-list > .config-card:nth-child(even),
-html.light .config-map-list > .config-map-entry:nth-child(even) { background: #f4f4f4; }
-
-/* Top-level lists (directly under a tab) are emphasized, each with its own
-   accent color (see --list-accent assigned per top-level card above). */
-.config-list--top > .config-list-header .config-label {
-  font-size: 12px;
-  color: var(--list-accent);
-}
-.config-list--top > .config-list-header .config-count {
-  background: color-mix(in srgb, var(--list-accent) 16%, transparent);
-  border-color: var(--list-accent);
-  color: var(--list-accent);
-}
-.config-list--top > .config-card-list > .config-card,
-.config-list--top > .config-map-list > .config-map-entry {
-  border-left: 3px solid var(--list-accent);
-  padding-left: 12px;
-}
-
-/* Nested lists read more quietly: no borders, and each nesting level adds a
-   translucent overlay so deeper lists differ from their parent by lightness. */
-.config-list--nested > .config-list-header .config-label {
-  color: var(--text-muted);
-}
-.config-list--nested .config-card-list > .config-card,
-.config-list--nested .config-map-list > .config-map-entry {
-  border: none;
-  border-left: none;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-}
-html.light .config-list--nested .config-card-list > .config-card,
-html.light .config-list--nested .config-map-list > .config-map-entry {
-  background: color-mix(in srgb, var(--text) 7%, transparent);
-}
+.cfg-model-card .config-input { flex: 1 1 180px; min-width: 0; }
 
 @media (max-width: 640px) {
   .config-layout { grid-template-columns: 1fr; }
@@ -1758,11 +1887,13 @@ html.light .config-list--nested .config-map-list > .config-map-entry {
 }
 .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
+/* Only ever used for destructive "remove" actions — styled red by default
+   so intent is obvious without needing a hover to reveal it. */
 .btn-icon {
-  background: none;
-  border: 1px solid var(--border);
+  background: rgba(224, 92, 92, 0.08);
+  border: 1px solid var(--danger);
   border-radius: var(--radius-sm);
-  color: var(--text-muted);
+  color: var(--danger);
   cursor: pointer;
   width: 30px; height: 30px;
   display: flex; align-items: center; justify-content: center;
@@ -1770,9 +1901,9 @@ html.light .config-list--nested .config-map-list > .config-map-entry {
   transition: color .12s, border-color .12s, background .12s;
 }
 .btn-icon:hover {
-  color: var(--danger);
+  color: #fff;
   border-color: var(--danger);
-  background: rgba(224, 92, 92, 0.08);
+  background: var(--danger);
 }
 
 .skill-list {
@@ -2034,11 +2165,6 @@ html.light .config-list--nested .config-map-list > .config-map-entry {
   padding: 4px 12px;
   font-size: 12px;
   line-height: 1.5;
-}
-
-.subagent-item.is-think {
-  color: var(--text-muted);
-  font-style: italic;
 }
 
 .subagent-item.is-tool {

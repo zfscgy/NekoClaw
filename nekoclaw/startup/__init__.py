@@ -10,8 +10,10 @@ These helpers split bootstrap concerns out of ``__main__.py``:
 - :func:`ensure_exec_tool_python_venv` prepares the bundled Windows venv used
   by the ``exec`` tool (idempotent — safe to call on every launch).
 - :func:`sync_optional_skills` copies the bundled ``resources/skills/skills``
-  optional skills into the user's workspace ``skills/`` directory on first run,
-  so they appear as workspace-managed (editable, toggleable) skills.
+  optional skills into the user's workspace ``skills/`` directory (so they
+  appear as workspace-managed, editable, toggleable skills) and keeps them up
+  to date on every launch, refreshing enabled or disabled (zipped) copies
+  in place when the bundled content changes.
 - :func:`nekochat_url` / :func:`open_nekochat_browser` resolve and open the
   NekoChat web UI in the user's default browser once the gateway is ready.
 """

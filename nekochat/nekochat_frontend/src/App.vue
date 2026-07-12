@@ -74,13 +74,6 @@
                   @lightbox="openLightbox"
                 />
               </template>
-
-              <div v-if="isTyping && !isStreaming" class="msg-row assistant">
-                <div class="progress-card">
-                  <div class="typing-dots"><span></span><span></span><span></span></div>
-                  Thinking…
-                </div>
-              </div>
             </div>
 
             <EmptyState v-else @new="newConversation" />
@@ -200,7 +193,6 @@ const {
   activeId,
   inputText,
   isTyping,
-  isStreaming,
   streamActive,
   wsStatus,
   wsStatusLabel,

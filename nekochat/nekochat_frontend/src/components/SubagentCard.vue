@@ -18,10 +18,11 @@
         :title="item.type === 'tool_call' && item.toolResult ? 'Click to view result' : ''"
         @click="item.type === 'tool_call' && item.toolResult && openResult(item)"
       >
-        <div v-if="item.type === 'think'" class="subagent-think">{{ item.content }}</div>
+        <ReasoningBlock v-if="item.type === 'think'" :content="item.content || ''" />
         <div v-else-if="item.type === 'tool_call'" class="subagent-tool">
-          <span>
-            <span class="tool-name">{{ toolCallName(item.content) }}</span>{{ toolCallRest(item.content) }}
+          <span class="tool-call-inline">
+            <span class="tool-bracket">[</span><span class="tool-name">{{ toolCallDisplay(item).name }}</span><span class="tool-bracket">]</span>
+            <template v-if="toolCallDisplay(item).args"><span class="tool-bracket">[</span><span class="tool-args">{{ toolCallDisplay(item).args }}</span><span class="tool-bracket">]</span></template>
           </span>
         </div>
         <div v-else class="subagent-content" v-html="renderMarkdown(item.content || '')"></div>
@@ -73,7 +74,8 @@
 import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { renderMarkdown } from '../utils/markdown'
 import type { SubagentState, ChatMessage } from '../composables/useChat'
-import { toolCallName, toolCallRest, toolResultDetails, type ToolResultDetails } from '../utils/actions'
+import { toolCallDisplay, toolResultDetails, type ToolResultDetails } from '../utils/actions'
+import ReasoningBlock from './ReasoningBlock.vue'
 
 const STATUS_LABELS: Record<string, string> = {
   running: 'Running',

@@ -32,7 +32,9 @@ Options:
 
 ## Installation
 
-`build/install.py` bundles whatever is in `skills/` into the app. On first
-launch the gateway copies each skill into the user's `workspace/skills/<name>/`
+`build/install.py` bundles whatever is in `skills/` into the app. On every
+launch the gateway syncs each skill into the user's `workspace/skills/<name>/`
 (see `nekoclaw.startup.sync_optional_skills`), where it becomes a normal,
-editable, toggleable workspace skill.
+editable, toggleable workspace skill. Already-installed skills are kept up to
+date: if the bundled content changes, the workspace copy is refreshed in
+place (whether it's currently enabled or disabled/zipped).

@@ -2,37 +2,36 @@
   <div class="modal-backdrop" @click.self="$emit('close')">
     <div class="modal-card modal-wide config-modal">
       <div class="modal-header">
-        <h2 class="modal-title">Configuration</h2>
-        <button class="modal-close" @click="$emit('close')" title="Close">✕</button>
+        <h2 class="modal-title">配置</h2>
+        <button class="modal-close" @click="$emit('close')" title="关闭">✕</button>
       </div>
 
       <div v-if="loading" class="modal-body">
-        <div class="modal-status">Loading…</div>
+        <div class="modal-status">加载中…</div>
       </div>
 
       <template v-else>
         <div v-if="error" class="modal-error config-error-banner">{{ error }}</div>
 
         <div class="config-layout">
-          <nav class="config-tabs" aria-label="Configuration sections">
+          <nav class="config-tabs" aria-label="配置分区">
             <button
               v-for="tab in tabs"
-              :key="tab"
+              :key="tab.key"
               class="config-tab"
-              :class="{ active: tab === activeTab }"
-              @click="activeTab = tab"
+              :class="{ active: tab.key === activeTab }"
+              @click="activeTab = tab.key"
             >
-              {{ prettyLabel(tab) }}
+              {{ tab.label }}
             </button>
           </nav>
 
           <div class="config-pane">
-            <ConfigNode
-              v-if="activeTab"
+            <component
+              :is="tabComponent"
+              v-if="tabComponent"
               :path="activeTab"
-              :schema="schemaFor(activeTab)"
               :value="draft[activeTab]"
-              :full-schema="fullSchema"
               @update="onFieldUpdate"
             />
           </div>
@@ -41,15 +40,15 @@
 
       <div class="modal-footer">
         <button class="btn-secondary" @click="reset" :disabled="!isDirty || saving">
-          Reset
+          放弃更改
         </button>
-        <button class="btn-secondary" @click="$emit('close')">Close</button>
+        <button class="btn-secondary" @click="$emit('close')">关闭</button>
         <button
           class="btn-primary"
           :disabled="loading || saving || !isDirty"
           @click="save"
         >
-          {{ saving ? 'Saving…' : isDirty ? `Save (${dirtyKeys.length})` : 'Saved' }}
+          {{ saving ? '保存中…' : isDirty ? `保存（${dirtyKeys.length}）` : '已保存' }}
         </button>
       </div>
     </div>
@@ -57,23 +56,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import ConfigNode from './ConfigNode.vue'
-
-type Json = string | number | boolean | null | Json[] | { [k: string]: Json }
-interface SchemaNode {
-  type?: string | string[]
-  properties?: Record<string, SchemaNode>
-  additionalProperties?: boolean | SchemaNode
-  items?: SchemaNode
-  anyOf?: SchemaNode[]
-  oneOf?: SchemaNode[]
-  enum?: Json[]
-  default?: Json
-  title?: string
-  description?: string
-  format?: string
-}
+import { computed, onMounted, ref, type Component } from 'vue'
+import AgentsTab from './config/AgentsTab.vue'
+import ChannelsTab from './config/ChannelsTab.vue'
+import ProvidersTab from './config/ProvidersTab.vue'
+import GatewayTab from './config/GatewayTab.vue'
+import ToolsTab from './config/ToolsTab.vue'
+import type { Json } from '../utils/configTypes'
 
 defineEmits<{ close: [] }>()
 
@@ -83,17 +72,26 @@ const error = ref<string | null>(null)
 
 const original = ref<Record<string, Json>>({})
 const draft = ref<Record<string, Json>>({})
-const fullSchema = ref<SchemaNode>({})
-const tabs = ref<string[]>([])
 const activeTab = ref<string>('')
 
-const TAB_ORDER = ['agents', 'channels', 'providers', 'gateway', 'tools']
+// Each top-level Config field gets a hand-built tab instead of a generic
+// JSON-schema walker — see nekoclaw/config/schema.py for the source of truth.
+const TAB_DEFS: { key: string; label: string; component: Component }[] = [
+  { key: 'agents', label: 'Agent', component: AgentsTab },
+  { key: 'channels', label: '频道', component: ChannelsTab },
+  { key: 'providers', label: '服务商', component: ProvidersTab },
+  { key: 'gateway', label: '网关', component: GatewayTab },
+  { key: 'tools', label: '工具', component: ToolsTab },
+]
+
+const tabs = computed(() => TAB_DEFS.filter(t => t.key in draft.value))
+const tabComponent = computed(() => TAB_DEFS.find(t => t.key === activeTab.value)?.component)
 
 const dirtyKeys = computed(() => {
   const out: string[] = []
   for (const tab of tabs.value) {
-    if (JSON.stringify(original.value[tab]) !== JSON.stringify(draft.value[tab])) {
-      out.push(tab)
+    if (JSON.stringify(original.value[tab.key]) !== JSON.stringify(draft.value[tab.key])) {
+      out.push(tab.key)
     }
   }
   return out
@@ -101,22 +99,13 @@ const dirtyKeys = computed(() => {
 
 const isDirty = computed(() => dirtyKeys.value.length > 0)
 
-function prettyLabel(key: string): string {
-  const title = fullSchema.value.properties?.[key]?.title
-  if (title) return title.replace(/Config$/, '') || title
-  return key
-}
-
-function schemaFor(key: string): SchemaNode {
-  return fullSchema.value.properties?.[key] ?? {}
-}
-
 function deepClone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v ?? null))
 }
 
 function setByPath(root: Record<string, Json>, path: string, value: Json): void {
   const parts = path.split('.')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let node: any = root
   for (let i = 0; i < parts.length - 1; i++) {
     if (node[parts[i]] == null || typeof node[parts[i]] !== 'object') {
@@ -137,21 +126,11 @@ async function load(): Promise<void> {
   try {
     const res = await fetch('/api/manager/config')
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const data = await res.json() as { config: Record<string, Json>; schema: SchemaNode }
+    const data = await res.json() as { config: Record<string, Json> }
     original.value = data.config || {}
     draft.value = deepClone(data.config || {})
-    fullSchema.value = data.schema || {}
 
-    const keys = Object.keys(data.config || {})
-    keys.sort((a, b) => {
-      const ai = TAB_ORDER.indexOf(a)
-      const bi = TAB_ORDER.indexOf(b)
-      if (ai === -1 && bi === -1) return a.localeCompare(b)
-      if (ai === -1) return 1
-      if (bi === -1) return -1
-      return ai - bi
-    })
-    tabs.value = keys
+    const keys = TAB_DEFS.map(t => t.key).filter(k => k in draft.value)
     if (!activeTab.value || !keys.includes(activeTab.value)) {
       activeTab.value = keys[0] ?? ''
     }

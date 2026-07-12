@@ -3,7 +3,7 @@
     <details
       class="action-details"
       :open="isOpen"
-      @toggle="emit('toggle', $event.target?.open ?? isOpen)"
+      @toggle="emit('toggle', ($event.target as HTMLDetailsElement)?.open ?? isOpen)"
     >
       <summary class="action-summary">
         <span class="chevron">▶</span>
@@ -29,11 +29,12 @@
           :title="item.type === 'tool_call' && item.toolResult ? 'Click to view result' : ''"
           @click="item.type === 'tool_call' && item.toolResult && openResult(item)"
         >
-          <span v-if="item.type === 'tool_call'">
-            <span class="tool-name">{{ toolCallName(item.content) }}</span>{{ toolCallRest(item.content) }}
+          <span v-if="item.type === 'tool_call'" class="tool-call-inline">
+            <span class="tool-bracket">[</span><span class="tool-name">{{ toolCallDisplay(item).name }}</span><span class="tool-bracket">]</span>
+            <template v-if="toolCallDisplay(item).args"><span class="tool-bracket">[</span><span class="tool-args">{{ toolCallDisplay(item).args }}</span><span class="tool-bracket">]</span></template>
           </span>
-          <div v-else-if="item.type === 'reasoning_response'" class="reasoning-response" v-html="renderMarkdown(item.content)"></div>
-          <span v-else>{{ item.content }}</span>
+          <ReasoningBlock v-else-if="item.type === 'reasoning_response'" :content="String(item.content ?? '')" markdown />
+          <ReasoningBlock v-else :content="String(item.content ?? '')" />
         </div>
       </div>
     </details>
@@ -77,8 +78,8 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { toolCallName, toolCallRest, visibleItems, actionGroupLabel, toolResultDetails, type ActionItem, type ToolResultDetails } from '../utils/actions'
-import { renderMarkdown } from '../utils/markdown'
+import { toolCallDisplay, visibleItems, actionGroupLabel, toolResultDetails, type ActionItem, type ToolResultDetails } from '../utils/actions'
+import ReasoningBlock from './ReasoningBlock.vue'
 import type { StreamStatus } from '../composables/useChat'
 
 const props = defineProps<{
