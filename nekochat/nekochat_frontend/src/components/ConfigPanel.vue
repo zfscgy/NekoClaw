@@ -32,6 +32,7 @@
               v-if="tabComponent"
               :path="activeTab"
               :value="draft[activeTab]"
+              :model-options="modelOptions"
               @update="onFieldUpdate"
             />
           </div>
@@ -98,6 +99,20 @@ const dirtyKeys = computed(() => {
 })
 
 const isDirty = computed(() => dirtyKeys.value.length > 0)
+
+// Flattened "providerName/modelId" options sourced from the Providers tab's
+// draft, so the Agents tab's model picker (and any other cross-tab lookups)
+// always reflect in-progress edits rather than the last-saved config.
+const modelOptions = computed<string[]>(() => {
+  const openai = (draft.value.providers as { openai?: Record<string, { models?: { id?: string }[] }> } | undefined)?.openai ?? {}
+  const out: string[] = []
+  for (const [name, provider] of Object.entries(openai)) {
+    for (const model of provider?.models ?? []) {
+      if (model?.id) out.push(`${name}/${model.id}`)
+    }
+  }
+  return out
+})
 
 function deepClone<T>(v: T): T {
   return JSON.parse(JSON.stringify(v ?? null))

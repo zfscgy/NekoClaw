@@ -132,6 +132,7 @@ interface ChannelsValue {
 const props = defineProps<{
   path: string
   value: Json
+  modelOptions?: string[]
 }>()
 
 const emit = defineEmits<{ update: [path: string, value: Json] }>()

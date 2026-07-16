@@ -226,26 +226,21 @@ function _formatResolvedValue(value: unknown): string {
   }
 }
 
-/** Inline `arg=value arg2=value2` text for a tool call, tolerant of partial/streaming JSON. */
-export function toolCallArgsInline(item: ActionItem): string {
+/** Per-argument `{key, value}` chips for a tool call, tolerant of partial/streaming JSON. */
+export function toolCallArgEntries(item: ActionItem): PartialArgEntry[] {
   if (item.toolArguments && typeof item.toolArguments === 'object') {
-    return Object.entries(item.toolArguments)
-      .map(([k, v]) => `${k}=${_formatResolvedValue(v)}`)
-      .join(' ')
+    return Object.entries(item.toolArguments).map(([k, v]) => ({ key: k, value: _formatResolvedValue(v) }))
   }
   const rest = toolCallRest(item.content ?? '').trim()
   const inner = rest.startsWith('(') && rest.endsWith(')') ? rest.slice(1, -1) : rest
-  if (!inner.trim()) return ''
+  if (!inner.trim()) return []
   return parsePartialArgs(inner)
-    .map(e => e.value ? `${e.key}=${e.value}${e.truncated ? '…' : ''}` : `${e.key}${e.truncated ? '…' : ''}`)
-    .join(' ')
 }
 
-/** `[toolName][arg=value ...]` display string for a tool call item. */
-export function toolCallDisplay(item: ActionItem): { name: string; args: string } {
+/** `toolName` + per-argument chips for a tool call item. */
+export function toolCallDisplay(item: ActionItem): { name: string; argEntries: PartialArgEntry[] } {
   const name = item.toolName || toolCallName(item.content ?? '')
-  const args = toolCallArgsInline(item)
-  return { name, args }
+  return { name, argEntries: toolCallArgEntries(item) }
 }
 
 export function visibleItems(items: ActionItem[]): ActionItem[] {

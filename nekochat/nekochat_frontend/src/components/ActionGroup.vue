@@ -29,9 +29,18 @@
           :title="item.type === 'tool_call' && item.toolResult ? 'Click to view result' : ''"
           @click="item.type === 'tool_call' && item.toolResult && openResult(item)"
         >
-          <span v-if="item.type === 'tool_call'" class="tool-call-inline">
-            <span class="tool-bracket">[</span><span class="tool-name">{{ toolCallDisplay(item).name }}</span><span class="tool-bracket">]</span>
-            <template v-if="toolCallDisplay(item).args"><span class="tool-bracket">[</span><span class="tool-args">{{ toolCallDisplay(item).args }}</span><span class="tool-bracket">]</span></template>
+          <span v-if="item.type === 'tool_call'" class="tool-call-card">
+            <span class="tool-call-name">{{ toolCallDisplay(item).name }}</span>
+            <span v-if="toolCallDisplay(item).argEntries.length" class="tool-call-args">
+              <span
+                v-for="(e, ei) in toolCallDisplay(item).argEntries"
+                :key="ei"
+                class="tool-call-arg"
+              >
+                <span class="tool-call-arg-key">{{ e.key }}</span>
+                <span v-if="e.value || e.truncated" class="tool-call-arg-val">{{ e.value }}{{ e.truncated ? '…' : '' }}</span>
+              </span>
+            </span>
           </span>
           <ReasoningBlock v-else-if="item.type === 'reasoning_response'" :content="String(item.content ?? '')" markdown />
           <ReasoningBlock v-else :content="String(item.content ?? '')" />

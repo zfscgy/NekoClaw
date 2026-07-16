@@ -16,15 +16,17 @@
             @input="set('workspace', ($event.target as HTMLInputElement).value)"
           />
         </FieldRow>
-        <FieldRow label="模型" hint="providerName/modelId 形式，例如 default/gpt-5.4；也可在顶部模型选择器中修改">
-          <input
+        <FieldRow label="模型" hint="从已在“服务商”中添加的模型里选择；也可在顶部模型选择器中修改">
+          <select
             class="config-input"
-            type="text"
-            spellcheck="false"
-            autocomplete="off"
             :value="defaults.model"
-            @input="set('model', ($event.target as HTMLInputElement).value)"
-          />
+            :disabled="!props.modelOptions.length"
+            @change="set('model', ($event.target as HTMLSelectElement).value)"
+          >
+            <option v-if="!props.modelOptions.length" value="">请先在「服务商」标签页中添加模型</option>
+            <option v-else-if="!props.modelOptions.includes(defaults.model)" :value="defaults.model">{{ defaults.model }}（不在服务商列表中）</option>
+            <option v-for="opt in props.modelOptions" :key="opt" :value="opt">{{ opt }}</option>
+          </select>
         </FieldRow>
       </div>
     </section>
@@ -108,10 +110,13 @@ interface AgentDefaults {
   reasoning_effort: string | null
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   path: string
   value: Json
-}>()
+  modelOptions?: string[]
+}>(), {
+  modelOptions: () => [],
+})
 
 const emit = defineEmits<{ update: [path: string, value: Json] }>()
 

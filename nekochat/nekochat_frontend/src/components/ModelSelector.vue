@@ -1,35 +1,36 @@
 <template>
-  <div class="model-selector" :class="{ open: dropdownOpen, dirty: isDirty, saving }" ref="rootRef">
-    <input
-      ref="inputRef"
-      v-model="draft"
-      class="model-input"
-      type="text"
-      spellcheck="false"
-      autocomplete="off"
-      :placeholder="placeholder"
-      :title="`Model: ${current || '—'}`"
-      @focus="openDropdown"
-      @click="openDropdown"
-      @keydown.enter.prevent="commit"
-      @keydown.escape="cancelEdit"
-      @keydown.down.prevent="moveHighlight(1)"
-      @keydown.up.prevent="moveHighlight(-1)"
-    />
+  <div class="model-selector" :class="{ open: dropdownOpen, saving }" ref="rootRef">
     <button
       type="button"
-      class="model-caret"
-      :title="dropdownOpen ? 'Close' : 'Choose model'"
-      @mousedown.prevent
+      class="model-trigger"
+      :disabled="saving"
+      :title="`模型：${current || '—'}`"
       @click="toggleDropdown"
     >
-      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="2,4 5,7 8,4" />
-      </svg>
+      <span class="model-trigger-text">{{ current || placeholder }}</span>
+      <span class="model-caret" aria-hidden="true">
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="2,4 5,7 8,4" />
+        </svg>
+      </span>
     </button>
 
     <div v-if="dropdownOpen" class="model-dropdown" @mousedown.prevent>
       <div v-if="error" class="model-error">{{ error }}</div>
+      <input
+        v-if="recommended.length"
+        ref="searchRef"
+        v-model="query"
+        class="model-search"
+        type="text"
+        spellcheck="false"
+        autocomplete="off"
+        placeholder="筛选模型…"
+        @keydown.enter.prevent="commitHighlighted"
+        @keydown.escape="closeDropdown"
+        @keydown.down.prevent="moveHighlight(1)"
+        @keydown.up.prevent="moveHighlight(-1)"
+      />
       <div v-if="filteredModels.length" class="model-options">
         <div
           v-for="(m, i) in filteredModels"
@@ -43,21 +44,20 @@
           @mouseenter="highlight = i"
         >
           <span class="model-option-id">{{ m }}</span>
-          <span v-if="m === current" class="model-option-current">current</span>
+          <span v-if="m === current" class="model-option-current">当前</span>
         </div>
       </div>
       <div v-else class="model-empty">
-        {{ recommended.length ? 'No matches — press Enter to use as-is.' : 'No recommended models — type a model id and press Enter.' }}
+        {{ recommended.length ? '无匹配结果' : '还没有配置任何模型，请先在设置的“服务商”标签页中添加' }}
       </div>
-      <div class="model-hint">Enter to save · Esc to cancel</div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 
-const PLACEHOLDER = 'Model id…'
+const placeholder = '未选择模型'
 
 interface ModelShape {
   id: string
@@ -79,10 +79,8 @@ interface ConfigShape {
   providers?: { openai?: Record<string, ProviderShape> }
 }
 
-const placeholder = PLACEHOLDER
-
 const current = ref<string>('')
-const draft = ref<string>('')
+const query = ref<string>('')
 const recommended = ref<string[]>([])
 const dropdownOpen = ref(false)
 const error = ref<string | null>(null)
@@ -90,17 +88,14 @@ const saving = ref(false)
 const highlight = ref(-1)
 
 const rootRef = ref<HTMLElement | null>(null)
-const inputRef = ref<HTMLInputElement | null>(null)
+const searchRef = ref<HTMLInputElement | null>(null)
 
-const isDirty = computed(() => draft.value.trim() !== current.value)
-
+// Strictly a picker over configured models — never lets the user commit
+// arbitrary/free-typed text as the active model. The search box only
+// narrows `recommended`; selecting always goes through `select()`.
 const filteredModels = computed(() => {
-  const q = draft.value.trim().toLowerCase()
-  // While the input still shows the unmodified current model, surface the
-  // full recommended list — otherwise the current model id (which usually
-  // doesn't appear in the recommended list as-is) would filter everything
-  // out and leave the dropdown looking empty.
-  if (!q || draft.value === current.value) return recommended.value
+  const q = query.value.trim().toLowerCase()
+  if (!q) return recommended.value
   return recommended.value.filter(m => m.toLowerCase().includes(q))
 })
 
@@ -111,7 +106,6 @@ async function load(): Promise<void> {
     const data = await res.json() as { config: ConfigShape }
     const cfg = data.config || {}
     current.value = cfg.agents?.defaults?.model || ''
-    draft.value = current.value
     // Build qualified ``providerName/modelId`` ids so the selected value names
     // both the provider and the model it belongs to.
     const merged: string[] = []
@@ -134,73 +128,55 @@ async function load(): Promise<void> {
 
 function openDropdown(): void {
   dropdownOpen.value = true
+  query.value = ''
   highlight.value = -1
+  nextTick(() => searchRef.value?.focus())
 }
 
 function closeDropdown(): void {
   dropdownOpen.value = false
+  query.value = ''
   highlight.value = -1
 }
 
 function toggleDropdown(): void {
-  if (dropdownOpen.value) {
-    closeDropdown()
-    inputRef.value?.blur()
-  } else {
-    openDropdown()
-    inputRef.value?.focus()
-  }
+  if (dropdownOpen.value) closeDropdown()
+  else openDropdown()
 }
 
 function moveHighlight(delta: number): void {
   if (!filteredModels.value.length) return
-  if (!dropdownOpen.value) openDropdown()
   const len = filteredModels.value.length
   highlight.value = (highlight.value + delta + len) % len
 }
 
-function cancelEdit(): void {
-  draft.value = current.value
-  closeDropdown()
-  inputRef.value?.blur()
+function commitHighlighted(): void {
+  if (highlight.value >= 0 && highlight.value < filteredModels.value.length) {
+    select(filteredModels.value[highlight.value])
+  } else if (filteredModels.value.length === 1) {
+    select(filteredModels.value[0])
+  }
 }
 
 async function select(model: string): Promise<void> {
-  draft.value = model
-  await commit()
-}
-
-async function commit(): Promise<void> {
-  if (highlight.value >= 0 && highlight.value < filteredModels.value.length) {
-    draft.value = filteredModels.value[highlight.value]
-  }
-  const next = draft.value.trim()
-  if (!next) {
-    cancelEdit()
-    return
-  }
-  if (next === current.value) {
+  if (model === current.value) {
     closeDropdown()
-    inputRef.value?.blur()
     return
   }
-
   saving.value = true
   error.value = null
   try {
     const res = await fetch('/api/manager/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: 'agents.defaults.model', value: next }),
+      body: JSON.stringify({ key: 'agents.defaults.model', value: model }),
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({})) as { error?: string }
       throw new Error(body.error || `HTTP ${res.status}`)
     }
-    current.value = next
-    draft.value = next
+    current.value = model
     closeDropdown()
-    inputRef.value?.blur()
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -210,10 +186,7 @@ async function commit(): Promise<void> {
 
 function onDocClick(ev: MouseEvent): void {
   if (!rootRef.value) return
-  if (!rootRef.value.contains(ev.target as Node)) {
-    if (isDirty.value) draft.value = current.value
-    closeDropdown()
-  }
+  if (!rootRef.value.contains(ev.target as Node)) closeDropdown()
 }
 
 onMounted(() => {

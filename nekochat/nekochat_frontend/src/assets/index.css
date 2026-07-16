@@ -21,6 +21,7 @@
   --green: #4cae7e;
   --radius: 12px;
   --radius-sm: 8px;
+  --font-ui: 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --sidebar-w: 260px;
   --sidebar-collapsed-w: 52px;
   --input-h: 52px;
@@ -346,45 +347,44 @@ html, body {
 
 .action-summary {
   list-style: none;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 7px;
   cursor: pointer;
   user-select: none;
-  padding: 5px 10px;
+  padding: 4px 10px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
+  border: none;
   background: var(--tool-bg);
+  font-family: var(--font-ui);
   font-size: 12px;
   color: var(--text-muted);
-  transition: background .12s, border-color .12s;
+  transition: background .12s, color .12s;
   width: fit-content;
   max-width: 100%;
 }
 .action-summary::-webkit-details-marker { display: none; }
 .action-summary::marker { display: none; }
 .action-details[open] .action-summary {
-  border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-dim);
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
 }
-.action-summary:hover { border-color: var(--text-muted); color: var(--text); }
+.action-summary:hover { color: var(--text); background: var(--surface2); }
 .action-summary .chevron { font-size: 10px; transition: transform .2s; display: inline-block; }
 .action-details[open] .action-summary .chevron { transform: rotate(90deg); }
 .action-summary .step-count {
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  background: var(--surface2);
+  font-family: var(--font-ui);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 20px;
   padding: 1px 7px;
   font-size: 11px;
   color: var(--text-muted);
 }
-.action-details[open] .step-count { color: var(--accent); }
+html.light .action-summary .step-count { background: rgba(0, 0, 0, 0.05); }
+.action-details[open] .step-count { color: var(--accent); background: transparent; }
 
 .action-summary .action-model {
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--font-ui);
   font-size: 10px;
   color: var(--text-muted);
   opacity: 0.7;
@@ -395,83 +395,134 @@ html, body {
 }
 
 .action-items {
-  border: 1px solid var(--tool-border);
-  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 6px;
+  border: none;
+  border-radius: 0;
   max-height: 400px;
   overflow-y: auto;
-  max-width: 90%;
+  max-width: 100%;
+  width: fit-content;
+  min-width: min(100%, 280px);
 }
 
 .action-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
+  gap: 6px;
+  padding: 5px 10px;
   font-size: 12px;
-  border-bottom: 1px solid var(--border);
-}
-.action-item:last-child { border-bottom: none; }
-.action-item.is-tool {
+  border: none;
+  border-radius: var(--radius-sm);
+  width: fit-content;
+  max-width: 100%;
   background: var(--tool-bg);
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  color: #79c0ff;
 }
-.action-item.is-tool .tool-name { color: #d2a8ff; font-weight: 600; margin-right: 2px; }
+.action-item.is-tool {
+  padding: 4px 10px;
+  align-items: center;
+}
 .action-item.is-tool.tool-call-clickable {
   cursor: pointer;
-  transition: background .12s;
+  transition: background .15s ease;
 }
 .action-item.is-tool.tool-call-clickable:hover {
-  background: rgba(125, 180, 255, 0.14);
+  background: var(--surface2);
+}
+.action-item.is-progress {
+  background: var(--progress-bg);
+  width: min(100%, 520px);
+  max-width: 100%;
 }
 
-/* ── [func][arg=val ...] inline tool call display ──────────────────── */
-.tool-call-inline {
-  display: inline-flex;
+/* ── Tool call card: inline name + args, no nested boxes ─────────── */
+.tool-call-card {
+  display: flex;
   align-items: baseline;
-  gap: 2px;
   flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.tool-call-name {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+.tool-call-args {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
   min-width: 0;
 }
-.tool-bracket { color: var(--text-muted); opacity: 0.6; }
-.tool-call-inline .tool-name { color: #d2a8ff; font-weight: 600; }
-.tool-args {
-  color: #79c0ff;
-  white-space: pre-wrap;
-  word-break: break-word;
+.tool-call-arg {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  min-width: 0;
+  max-width: 280px;
 }
-html.light .tool-call-inline .tool-name { color: #6f42c1; }
-html.light .tool-args { color: #0969da; }
+.tool-call-arg-key {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 11.5px;
+}
+.tool-call-arg-val {
+  color: var(--text);
+  font-weight: 400;
+  font-size: 12px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 
 .tool-result-card {
   max-width: 760px;
   max-height: calc(100vh - 48px);
+  font-family: var(--font-ui);
+}
+.tool-result-card .modal-title {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .tool-result-modal-body {
-  padding: 16px 20px;
-  gap: 14px;
+  padding: 18px 22px;
+  gap: 18px;
 }
 .tool-result-section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .tool-result-section-label {
+  font-family: var(--font-ui);
   font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
   color: var(--text-muted);
 }
 .tool-result-text {
   margin: 0;
-  padding: 10px 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  font-size: 12px;
+  padding: 12px 14px;
+  font-family: var(--font-ui);
+  font-size: 13px;
   line-height: 1.55;
   color: var(--text);
   background: var(--tool-bg);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-sm);
   white-space: pre-wrap;
   word-break: break-word;
@@ -479,53 +530,51 @@ html.light .tool-args { color: #0969da; }
 .tool-arg-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  font-size: 12px;
+  gap: 6px;
+  font-family: var(--font-ui);
+  font-size: 13px;
   line-height: 1.5;
 }
 .tool-arg-item {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border);
+  gap: 2px;
+  border: none;
   border-radius: var(--radius-sm);
   overflow: hidden;
+  background: var(--tool-bg);
+  padding: 8px 12px;
 }
-.tool-arg-key {
-  padding: 6px 10px;
-  background: rgba(210, 168, 255, 0.12);
-  color: #d2a8ff;
-  font-weight: 600;
-  border-bottom: 1px solid var(--border);
+.tool-arg-item .tool-arg-key {
+  padding: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 700;
+  font-size: 12px;
+  border: none;
   word-break: break-word;
 }
-html.light .tool-arg-key {
-  background: rgba(111, 66, 193, 0.10);
-  color: #6f42c1;
-}
-.tool-arg-value {
+.tool-arg-item .tool-arg-value {
   margin: 0;
-  padding: 8px 10px;
-  background: var(--tool-bg);
-  color: #79c0ff;
-  font-family: inherit;
-  font-size: inherit;
-  line-height: inherit;
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
+  opacity: 0.9;
 }
-html.light .tool-arg-value { color: #0969da; }
 .tool-arg-empty {
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-muted);
   font-style: italic;
+  font-family: var(--font-ui);
   background: var(--tool-bg);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-sm);
-}
-.action-item.is-progress {
-  background: var(--progress-bg);
 }
 
 /* ── Reasoning block: dimmed text clamped to ~4 lines with its own
@@ -537,9 +586,10 @@ html.light .tool-arg-value { color: #0969da; }
   max-height: 6.4em; /* ~4 lines at line-height 1.6 */
   overflow-y: auto;
   color: var(--text-muted);
-  opacity: 0.82;
+  opacity: 0.9;
+  font-family: var(--font-ui);
   font-size: 12.5px;
-  line-height: 1.6;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -549,17 +599,17 @@ html.light .tool-arg-value { color: #0969da; }
 .reasoning-block ul,
 .reasoning-block ol { margin: 0.25em 0 0.5em 1.2em; padding: 0; }
 .reasoning-block code {
-  background: rgba(0,0,0,0.2);
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 3px;
   padding: 1px 4px;
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 11px;
 }
 .reasoning-block pre {
-  background: #111;
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  border: none;
   border-radius: var(--radius-sm);
-  padding: 10px;
+  padding: 8px 10px;
   overflow-x: auto;
   font-size: 11px;
   margin: 6px 0;
@@ -572,8 +622,8 @@ html.light .reasoning-block pre code {
   font-size: inherit;
   display: block;
 }
-html.light .reasoning-block pre { background: #f0f0f0; }
-html.light .reasoning-block code { background: rgba(0,0,0,0.06); }
+html.light .reasoning-block pre { background: rgba(0, 0, 0, 0.04); }
+html.light .reasoning-block code { background: rgba(0, 0, 0, 0.05); }
 
 /* ── Subagent status line ───────────────────────────────── */
 .subagent-line-row {
@@ -1094,55 +1144,66 @@ html.light .msg-bubble pre code {
   border-color: var(--text);
   background: var(--surface);
 }
-.model-selector.dirty {
-  border-color: var(--accent, #d4a830);
-}
 .model-selector.saving {
   opacity: 0.7;
   pointer-events: none;
 }
 
-.model-input {
+/* A plain button — never an editable text field — so the active model can
+   only ever be one of the options offered in the dropdown below. */
+.model-trigger {
   flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
   height: 100%;
+  width: 100%;
   background: transparent;
   border: none;
   outline: none;
   color: var(--text);
   font-size: 12px;
-  padding: 0 6px 0 10px;
   font-family: inherit;
+  padding: 0 8px 0 10px;
+  cursor: pointer;
 }
-.model-input::placeholder {
-  color: var(--text-muted);
-  opacity: 0.7;
+.model-trigger-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
 }
-
 .model-caret {
   flex: 0 0 auto;
-  height: 100%;
-  width: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: transparent;
-  border: none;
-  border-left: 1px solid transparent;
   color: var(--text-muted);
-  cursor: pointer;
-  transition: color .12s, border-color .12s, background .12s;
+  transition: color .12s, transform .15s ease;
 }
-.model-caret:hover {
-  color: var(--text);
-  background: var(--surface2);
-  border-left-color: var(--border);
-}
-.model-selector.open .model-caret svg {
+.model-trigger:hover .model-caret { color: var(--text); }
+.model-selector.open .model-caret {
   transform: rotate(180deg);
 }
-.model-caret svg {
-  transition: transform .15s ease;
+
+.model-search {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--surface2);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  outline: none;
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 7px 12px;
+}
+.model-search::placeholder {
+  color: var(--text-muted);
+  opacity: 0.7;
 }
 
 .model-dropdown {
@@ -1199,15 +1260,10 @@ html.light .msg-bubble pre code {
   flex-shrink: 0;
 }
 
-.model-empty,
-.model-hint {
+.model-empty {
   padding: 7px 12px;
   font-size: 11px;
   color: var(--text-muted);
-}
-.model-hint {
-  border-top: 1px solid var(--border);
-  margin-top: 2px;
 }
 
 .model-error {
@@ -1454,7 +1510,11 @@ html.light .cfg-help-tip-float { background: #fff; box-shadow: 0 6px 18px rgba(0
 
 .modal-card.config-modal {
   max-width: 820px;
-  max-height: min(86vh, 760px);
+  /* Fixed (not max-) height so switching tabs — whose content heights vary
+     a lot — never resizes the window; shorter tabs just leave the pane's
+     own scroll area emptier instead of shrinking the whole modal. */
+  height: min(86vh, 760px);
+  max-height: calc(100vh - 48px);
 }
 
 .config-error-banner {
@@ -2168,21 +2228,22 @@ html.light .cfg-item-card { background: #f7f7f7; }
 }
 
 .subagent-item.is-tool {
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  color: #79c0ff;
-  font-size: 11px;
-  padding: 3px 12px;
+  font-size: 12px;
+  padding: 4px 10px;
+  margin: 2px 8px;
+  width: fit-content;
+  max-width: calc(100% - 16px);
   background: var(--tool-bg);
-  border-bottom: 1px solid var(--border);
+  border: none;
+  border-radius: var(--radius-sm);
 }
 .subagent-item.is-tool:last-child { border-bottom: none; }
-.subagent-item.is-tool .tool-name { color: #d2a8ff; font-weight: 600; margin-right: 2px; }
 .subagent-item.is-tool.tool-call-clickable {
   cursor: pointer;
-  transition: background .12s;
+  transition: background .15s ease;
 }
 .subagent-item.is-tool.tool-call-clickable:hover {
-  background: rgba(125, 180, 255, 0.14);
+  background: var(--surface2);
 }
 
 .subagent-item.is-content {
@@ -2242,12 +2303,8 @@ html.light .msg-row.user .msg-bubble { background: rgba(235, 235, 235, 0.65); }
 html.light .msg-row.assistant .msg-bubble { background: rgba(255, 255, 255, 0.65); }
 html.light .msg-bubble pre { background: #f0f0f0; }
 html.light .msg-bubble code { background: rgba(0,0,0,0.06); }
-html.light .action-item.is-tool { color: #0550ae; }
-html.light .action-item.is-tool .tool-name { color: #6f42c1; }
 html.light .chat-area::after { opacity: 0.18; }
 html.light ::-webkit-scrollbar-thumb { background: #d0d0d0; }
 html.light ::-webkit-scrollbar-thumb:hover { background: #b0b0b0; }
 html.light .subagent-panel { box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
 html.light .subagent-card { box-shadow: 0 1px 6px rgba(0,0,0,0.1); }
-html.light .subagent-item.is-tool { color: #0550ae; }
-html.light .subagent-item.is-tool .tool-name { color: #6f42c1; }
