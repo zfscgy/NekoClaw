@@ -1,3 +1,5 @@
+
+
 # NekoClaw
 
 🐈 NekoClaw 是一个轻量级个人 AI Agent 框架。在一个 ReAct Agent 内核之上，叠加了
@@ -122,7 +124,7 @@ NekoClaw 会用它在 `resources/packpy/win64/.venvs/dev/` 下建一个干净的
 
   ```powershell
   cd resources\packpy\win64
-  .\build.ps1
+  python ..\..\build\install.py
   ```
 
   脚本会调用 standalone Python 的 `pip download`，把 `requirements.txt` 列出的
